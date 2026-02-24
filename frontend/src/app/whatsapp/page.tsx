@@ -98,14 +98,14 @@ export default function WhatsAppDashboard() {
       case 'session_created': loadSessions(); break
       case 'session_deleted': setSessions(prev => prev.filter(s => s.phone !== event.phone)); break
       case 'qr': {
-        const { session: phone, qrCode } = event as { session: string; qrCode: string }
+        const { session: phone, qrCode } = event as unknown as { session: string; qrCode: string }
         setSessions(prev => prev.map(s => s.phone === phone ? { ...s, qrCode, status: 'qr_pending' } : s))
         break
       }
       case 'stats_update':
         setStats(prev => {
           if (!prev) return prev
-          const delta = event as { sentDelta?: number; inQueueDelta?: number; errorsDelta?: number }
+          const delta = event as unknown as { sentDelta?: number; inQueueDelta?: number; errorsDelta?: number }
           return { ...prev, sent_today: prev.sent_today + (delta.sentDelta || 0), in_queue: prev.in_queue + (delta.inQueueDelta || 0), errors: prev.errors + (delta.errorsDelta || 0) }
         })
         break

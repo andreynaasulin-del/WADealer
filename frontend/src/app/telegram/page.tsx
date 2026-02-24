@@ -113,7 +113,7 @@ export default function TelegramDashboard() {
         break
 
       case 'tg_account_deleted': {
-        const { accountId } = event as { accountId: string }
+        const { accountId } = event as unknown as { accountId: string }
         setAccounts(prev => prev.filter(a => a.id !== accountId))
         break
       }
@@ -124,7 +124,7 @@ export default function TelegramDashboard() {
         break
 
       case 'stats_update': {
-        const delta = event as { sentDelta?: number; inQueueDelta?: number; errorsDelta?: number; platform?: string }
+        const delta = event as unknown as { sentDelta?: number; inQueueDelta?: number; errorsDelta?: number; platform?: string }
         if (delta.platform === 'telegram') {
           setStats(prev => {
             if (!prev) return prev
