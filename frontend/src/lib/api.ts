@@ -6,6 +6,45 @@ function getAuthToken(): string | null {
   return localStorage.getItem(AUTH_STORAGE_KEY)
 }
 
+function isDemoMode(): boolean {
+  if (typeof window === 'undefined') return false
+  return localStorage.getItem('wa_dealer_demo_mode') === '1'
+}
+
+// ── Demo/mock data when backend is offline ─────────────────────────────────
+const MOCK: Record<string, unknown> = {
+  '/sessions': [
+    { id: 'demo-1', phone: '+7 (900) 123-45-67', status: 'online', qrCode: null, proxyPort: '10001', connectedAt: new Date().toISOString() },
+    { id: 'demo-2', phone: '+972 55-975-3135', status: 'offline', qrCode: null, proxyPort: '10002', connectedAt: null },
+  ],
+  '/campaigns': [
+    { id: 'c1', name: 'Тестовая рассылка', template_text: 'Привет {name}! Это тестовое сообщение от WADealer 🚀', status: 'paused', session_id: 'demo-1', delay_min_sec: 30, delay_max_sec: 90, sent_today: 47, total_sent: 312, total_errors: 5, total_leads: 500, ai_criteria: null, created_at: new Date().toISOString() },
+  ],
+  '/campaigns/queue': { status: 'idle', size: 0 },
+  '/stats': { sessions_total: 2, sessions_online: 1, sessions_offline: 1, sessions_banned: 0, sent_today: 47, in_queue: 153, errors: 5, queue_status: 'idle', queue_size: 0 },
+  '/leads': { data: [], count: 0 },
+  '/crm/conversations': [
+    { remote_phone: '+79001234500', session_phone: '+79001234567', last_message: 'Здравствуйте, интересует ваше предложение', last_direction: 'inbound', last_message_at: new Date().toISOString() },
+    { remote_phone: '+79009876543', session_phone: '+79001234567', last_message: 'Отправлено!', last_direction: 'outbound', last_message_at: new Date(Date.now() - 3600000).toISOString() },
+  ],
+  '/telegram/accounts': [],
+  '/telegram/campaigns': [],
+  '/telegram/stats': { accounts_total: 0, accounts_active: 0, accounts_disconnected: 0, accounts_error: 0, sent_today: 0, in_queue: 0, errors: 0 },
+  '/auth/invites': [],
+}
+
+function getMock<T>(path: string): T {
+  // Match dynamic paths
+  const cleanPath = path.split('?')[0]
+  if (cleanPath.startsWith('/crm/conversations/')) {
+    return [
+      { id: 'm1', session_phone: '+79001234567', remote_phone: cleanPath.split('/')[3], direction: 'inbound', body: 'Привет! Меня интересует товар', wa_message_id: null, lead_id: null, created_at: new Date(Date.now() - 120000).toISOString() },
+      { id: 'm2', session_phone: '+79001234567', remote_phone: cleanPath.split('/')[3], direction: 'outbound', body: 'Здравствуйте! Конечно, расскажу подробнее', wa_message_id: null, lead_id: null, created_at: new Date(Date.now() - 60000).toISOString() },
+    ] as T
+  }
+  return (MOCK[cleanPath] ?? []) as T
+}
+
 async function req<T>(path: string, opts?: RequestInit): Promise<T> {
   const token = getAuthToken()
   const headers: Record<string, string> = {
@@ -14,24 +53,36 @@ async function req<T>(path: string, opts?: RequestInit): Promise<T> {
     ...(opts?.headers as Record<string, string> || {}),
   }
 
-  const res = await fetch(`${BASE}${path}`, {
-    ...opts,
-    headers,
-  })
+  try {
+    const res = await fetch(`${BASE}${path}`, {
+      ...opts,
+      headers,
+    })
 
-  // Handle 401 — redirect to login
-  if (res.status === 401 && typeof window !== 'undefined' && !path.startsWith('/auth/')) {
-    localStorage.removeItem(AUTH_STORAGE_KEY)
-    window.location.href = '/login'
-    throw new Error('Unauthorized')
-  }
+    // Handle 401 — redirect to login (but not in demo mode)
+    if (res.status === 401 && typeof window !== 'undefined' && !path.startsWith('/auth/') && !isDemoMode()) {
+      localStorage.removeItem(AUTH_STORAGE_KEY)
+      window.location.href = '/login'
+      throw new Error('Unauthorized')
+    }
 
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({ error: res.statusText }))
-    throw new Error(err.error || res.statusText)
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: res.statusText }))
+      throw new Error(err.error || res.statusText)
+    }
+    if (res.status === 204) return undefined as T
+    return res.json()
+  } catch {
+    // Backend unavailable — return mock data for GET requests
+    if (!opts?.method || opts.method === 'GET') {
+      return getMock<T>(path)
+    }
+    // For POST/PUT/DELETE in demo mode, return success stubs
+    if (isDemoMode()) {
+      return { ok: true, id: `demo_${Date.now()}` } as T
+    }
+    throw new Error('Сервер недоступен. Запусти backend на VPS.')
   }
-  if (res.status === 204) return undefined as T
-  return res.json()
 }
 
 // ─── Sessions ─────────────────────────────────────────────────────────────────

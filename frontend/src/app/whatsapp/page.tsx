@@ -29,6 +29,11 @@ export default function WhatsAppDashboard() {
   const [generatingInvite, setGeneratingInvite] = useState(false)
   const [copiedToken, setCopiedToken]       = useState<string | null>(null)
   const [showCRM, setShowCRM]               = useState(false)
+  const [demoMode, setDemoMode]             = useState(false)
+
+  useEffect(() => {
+    if (typeof window !== 'undefined') setDemoMode(localStorage.getItem('wa_dealer_demo_mode') === '1')
+  }, [])
 
   useEffect(() => {
     if (!isLoading && !isAuthenticated) window.location.href = '/login'
@@ -159,6 +164,7 @@ export default function WhatsAppDashboard() {
             ← <span className="hidden sm:inline">Меню</span>
           </a>
           <span className="text-green-400 font-bold text-xs sm:text-sm tracking-wider shrink-0">◈ WA</span>
+          {demoMode && <span className="text-[9px] px-1.5 py-0.5 rounded bg-amber-900/40 border border-amber-700/50 text-amber-400">DEMO</span>}
           <span className="text-[#7d8590] text-xs hidden lg:block truncate">Мульти-сессия WhatsApp рассылки</span>
         </div>
         <div className="flex items-center gap-1.5 sm:gap-3 shrink-0">
