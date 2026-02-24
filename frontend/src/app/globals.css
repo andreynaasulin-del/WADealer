@@ -1,0 +1,40 @@
+@import "tailwindcss";
+
+@theme {
+  --font-mono: ui-monospace, "Cascadia Code", "Source Code Pro", Menlo, Consolas, "DejaVu Sans Mono", monospace;
+  --color-green-400: oklch(79.2% 0.209 151.7);
+  --color-green-500: oklch(72.3% 0.219 149.6);
+  --color-zinc-950: oklch(10.2% 0.006 286.4);
+  --color-zinc-900: oklch(15.1% 0.006 285.9);
+  --color-zinc-800: oklch(21.5% 0.006 286.0);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  background-color: var(--color-zinc-950);
+  color: oklch(89.1% 0.005 286.3); /* zinc-200 */
+  font-family: var(--font-mono);
+  min-height: 100vh;
+}
+
+/* Scrollbar — dark */
+::-webkit-scrollbar        { width: 6px; height: 6px; }
+::-webkit-scrollbar-track  { background: transparent; }
+::-webkit-scrollbar-thumb  { background: oklch(32% 0.006 286); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: oklch(45% 0.006 286); }
+
+/* Terminal logs */
+.log-line-info  { color: oklch(79.2% 0.209 151.7); }   /* green-400 */
+.log-line-warn  { color: oklch(85.0% 0.195 90.7); }    /* yellow-300 */
+.log-line-error { color: oklch(72.1% 0.232 22.2); }    /* red-400 */
+.log-line-system { color: oklch(70.0% 0.15 250); }     /* blue-400 */
+
+/* Pulse animation for online status */
+@keyframes pulse-dot {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+.pulse { animation: pulse-dot 2s ease-in-out infinite; }
