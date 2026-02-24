@@ -21,6 +21,14 @@ const AuthContext = createContext<AuthState>({
 
 const STORAGE_KEY = 'wa_dealer_auth_token'
 
+function enterDemoMode(setSessionToken: (t: string) => void): { ok: boolean } {
+  const demoToken = `demo_${Date.now()}_${Math.random().toString(36).slice(2)}`
+  localStorage.setItem(STORAGE_KEY, demoToken)
+  localStorage.setItem('wa_dealer_demo_mode', '1')
+  setSessionToken(demoToken)
+  return { ok: true }
+}
+
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [sessionToken, setSessionToken] = useState<string | null>(null)
   const [isLoading, setIsLoading] = useState(true)
@@ -29,6 +37,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     const stored = localStorage.getItem(STORAGE_KEY)
     if (!stored) {
+      setIsLoading(false)
+      return
+    }
+
+    // If we're in demo mode, just accept the stored token immediately
+    if (localStorage.getItem('wa_dealer_demo_mode') === '1') {
+      setSessionToken(stored)
       setIsLoading(false)
       return
     }
@@ -53,31 +68,43 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   // ── Login with invite token ───────────────────────────────────────────────
   const login = useCallback(async (inviteToken: string): Promise<{ ok: boolean; error?: string }> => {
+    // Step 1: Try to reach the backend
+    let res: Response | null = null
     try {
-      const res = await fetch('/api/auth/login', {
+      res = await fetch('/api/auth/login', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ token: inviteToken }),
       })
-
-      const data = await res.json()
-
-      if (!res.ok) {
-        return { ok: false, error: data.error || 'Ошибка входа' }
-      }
-
-      const token = data.session_token
-      localStorage.setItem(STORAGE_KEY, token)
-      setSessionToken(token)
-      return { ok: true }
-    } catch {
-      // Backend unavailable — demo/offline mode: accept any non-empty token
-      const demoToken = `demo_${Date.now()}_${Math.random().toString(36).slice(2)}`
-      localStorage.setItem(STORAGE_KEY, demoToken)
-      localStorage.setItem('wa_dealer_demo_mode', '1')
-      setSessionToken(demoToken)
-      return { ok: true }
+    } catch (_e) {
+      // Network error — backend completely unreachable → demo mode
+      void _e
+      return enterDemoMode(setSessionToken)
     }
+
+    // Step 2: Check if response is JSON (not Vercel's HTML error page)
+    let data: Record<string, unknown> | null = null
+    try {
+      const text = await res.text()
+      data = JSON.parse(text)
+    } catch (_e) {
+      // Response is HTML or garbage — backend is not there → demo mode
+      void _e
+      return enterDemoMode(setSessionToken)
+    }
+
+    // Step 3: Backend responded with JSON — check if login was successful
+    if (!res.ok || !data) {
+      const errorMsg = (data?.error as string) || 'Ошибка входа'
+      return { ok: false, error: errorMsg }
+    }
+
+    // Step 4: Successful real login
+    const token = data.session_token as string
+    localStorage.setItem(STORAGE_KEY, token)
+    localStorage.removeItem('wa_dealer_demo_mode')
+    setSessionToken(token)
+    return { ok: true }
   }, [])
 
   // ── Logout ────────────────────────────────────────────────────────────────
@@ -90,6 +117,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       }).catch(() => {})
     }
     localStorage.removeItem(STORAGE_KEY)
+    localStorage.removeItem('wa_dealer_demo_mode')
     setSessionToken(null)
   }, [])
 

@@ -53,36 +53,51 @@ async function req<T>(path: string, opts?: RequestInit): Promise<T> {
     ...(opts?.headers as Record<string, string> || {}),
   }
 
-  try {
-    const res = await fetch(`${BASE}${path}`, {
-      ...opts,
-      headers,
-    })
-
-    // Handle 401 — redirect to login (but not in demo mode)
-    if (res.status === 401 && typeof window !== 'undefined' && !path.startsWith('/auth/') && !isDemoMode()) {
-      localStorage.removeItem(AUTH_STORAGE_KEY)
-      window.location.href = '/login'
-      throw new Error('Unauthorized')
-    }
-
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({ error: res.statusText }))
-      throw new Error(err.error || res.statusText)
-    }
-    if (res.status === 204) return undefined as T
-    return res.json()
-  } catch {
-    // Backend unavailable — return mock data for GET requests
+  // If we're in demo mode — skip network entirely, return mocks immediately
+  if (isDemoMode()) {
     if (!opts?.method || opts.method === 'GET') {
       return getMock<T>(path)
     }
-    // For POST/PUT/DELETE in demo mode, return success stubs
-    if (isDemoMode()) {
-      return { ok: true, id: `demo_${Date.now()}` } as T
-    }
-    throw new Error('Сервер недоступен. Запусти backend на VPS.')
+    return { ok: true, id: `demo_${Date.now()}` } as T
   }
+
+  // Try real backend
+  let res: Response
+  try {
+    res = await fetch(`${BASE}${path}`, { ...opts, headers })
+  } catch (_e) {
+    void _e
+    // Network error → fallback to mock
+    if (!opts?.method || opts.method === 'GET') return getMock<T>(path)
+    throw new Error('Сервер недоступен')
+  }
+
+  // Check if response is actually JSON (not Vercel HTML error page)
+  let json: T
+  try {
+    const text = await res.text()
+    json = JSON.parse(text) as T
+  } catch (_e) {
+    void _e
+    // Response is HTML/garbage → fallback to mock
+    if (!opts?.method || opts.method === 'GET') return getMock<T>(path)
+    throw new Error('Сервер вернул невалидный ответ')
+  }
+
+  // Handle 401 — redirect to login
+  if (res.status === 401 && typeof window !== 'undefined' && !path.startsWith('/auth/')) {
+    localStorage.removeItem(AUTH_STORAGE_KEY)
+    window.location.href = '/login'
+    throw new Error('Unauthorized')
+  }
+
+  if (!res.ok) {
+    const errObj = json as Record<string, unknown>
+    throw new Error((errObj?.error as string) || res.statusText)
+  }
+
+  if (res.status === 204) return undefined as T
+  return json
 }
 
 // ─── Sessions ─────────────────────────────────────────────────────────────────
