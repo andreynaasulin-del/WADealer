@@ -258,20 +258,38 @@ export class Orchestrator {
     if (!campaign) throw new Error('Кампания не найдена')
     const leads = await db.dbGetPendingLeads(campaignId)
     if (leads.length === 0) throw new Error('Нет ожидающих лидов для этой кампании')
-    const sessionPhone = campaign.session_id
-      ? (await db.dbGetAllSessions()).find(s => s.id === campaign.session_id)?.phone_number
-      : this.getAllSessionStates().find(s => s.status === 'online')?.phone
-    if (!sessionPhone) throw new Error('Нет онлайн-сессий для запуска кампании')
-    for (const lead of leads) {
+
+    // ── Round-robin distribution across online sessions ──────────────────
+    let onlineSessions = []
+    if (campaign.session_id) {
+      // Campaign tied to specific session
+      const s = (await db.dbGetAllSessions()).find(s => s.id === campaign.session_id)
+      if (s) onlineSessions = [s.phone_number]
+    }
+    if (onlineSessions.length === 0) {
+      // Use ALL online sessions for max throughput
+      onlineSessions = this.getAllSessionStates()
+        .filter(s => s.status === 'online')
+        .map(s => s.phone)
+    }
+    if (onlineSessions.length === 0) throw new Error('Нет онлайн-сессий для запуска кампании')
+
+    // Distribute leads across sessions in round-robin fashion
+    for (let i = 0; i < leads.length; i++) {
+      const lead = leads[i]
+      const sessionPhone = onlineSessions[i % onlineSessions.length]
       this.queue.add({
         id: lead.id, phone: lead.phone, campaignId,
         template: campaign.template_text, sessionPhone,
         delayMinSec: campaign.delay_min_sec, delayMaxSec: campaign.delay_max_sec,
       })
     }
+
     await db.dbUpdateCampaign(campaignId, { status: 'running' })
     this.queue.start()
-    this.log(sessionPhone, `Кампания "${campaign.name}" запущена — ${leads.length} лидов`)
+
+    const perSession = Math.ceil(leads.length / onlineSessions.length)
+    this.log(null, `Кампания "${campaign.name}" запущена — ${leads.length} лидов на ${onlineSessions.length} сессий (~${perSession}/сессию)`)
     this.broadcast({ type: 'campaign_update', campaignId, status: 'running' })
   }
 

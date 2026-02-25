@@ -14,18 +14,20 @@ function isDemoMode(): boolean {
 // ── Demo/mock data when backend is offline ─────────────────────────────────
 const MOCK: Record<string, unknown> = {
   '/sessions': [
-    { id: 'demo-1', phone: '+7 (900) 123-45-67', status: 'online', qrCode: null, proxyPort: '10001', connectedAt: new Date().toISOString() },
-    { id: 'demo-2', phone: '+972 55-975-3135', status: 'offline', qrCode: null, proxyPort: '10002', connectedAt: null },
+    { id: 'demo-1', phone: '+972 55-975-3135', status: 'online', qrCode: null, proxyPort: '10000', connectedAt: new Date().toISOString() },
+    { id: 'demo-2', phone: '+972 52-311-4020', status: 'online', qrCode: null, proxyPort: '10001', connectedAt: new Date().toISOString() },
+    { id: 'demo-3', phone: '+972 54-912-9166', status: 'online', qrCode: null, proxyPort: '10002', connectedAt: new Date().toISOString() },
+    { id: 'demo-4', phone: '+972 52-443-1703', status: 'offline', qrCode: null, proxyPort: '10003', connectedAt: null },
   ],
   '/campaigns': [
-    { id: 'c1', name: 'Тестовая рассылка', template_text: 'Привет {name}! Это тестовое сообщение от WADealer 🚀', status: 'paused', session_id: 'demo-1', delay_min_sec: 30, delay_max_sec: 90, sent_today: 47, total_sent: 312, total_errors: 5, total_leads: 500, ai_criteria: null, created_at: new Date().toISOString() },
+    { id: 'c1', name: 'Israel Lead Gen', template_text: '{Привет|Шалом|Хей}! Интересует {предложение|сотрудничество}? Напиши — расскажу подробнее 🚀', status: 'paused', session_id: null, delay_min_sec: 45, delay_max_sec: 120, sent_today: 0, total_sent: 0, total_errors: 0, total_leads: 686, ai_criteria: 'Клиент из Израиля, заинтересован в покупке товара', created_at: new Date().toISOString() },
   ],
   '/campaigns/queue': { status: 'idle', size: 0 },
-  '/stats': { sessions_total: 2, sessions_online: 1, sessions_offline: 1, sessions_banned: 0, sent_today: 47, in_queue: 153, errors: 5, queue_status: 'idle', queue_size: 0 },
-  '/leads': { data: [], count: 0 },
+  '/stats': { sessions_total: 4, sessions_online: 3, sessions_offline: 1, sessions_banned: 0, sent_today: 0, in_queue: 686, errors: 0, queue_status: 'idle', queue_size: 0 },
+  '/leads': { data: [], count: 686 },
   '/crm/conversations': [
-    { remote_phone: '+79001234500', session_phone: '+79001234567', last_message: 'Здравствуйте, интересует ваше предложение', last_direction: 'inbound', last_message_at: new Date().toISOString() },
-    { remote_phone: '+79009876543', session_phone: '+79001234567', last_message: 'Отправлено!', last_direction: 'outbound', last_message_at: new Date(Date.now() - 3600000).toISOString() },
+    { remote_phone: '+972523114020', session_phone: '+972559753135', last_message: 'שלום, מעוניין בהצעה שלכם', last_direction: 'inbound', last_message_at: new Date().toISOString() },
+    { remote_phone: '+972549129166', session_phone: '+972559753135', last_message: 'Отправлено!', last_direction: 'outbound', last_message_at: new Date(Date.now() - 3600000).toISOString() },
   ],
   '/telegram/accounts': [],
   '/telegram/campaigns': [],
