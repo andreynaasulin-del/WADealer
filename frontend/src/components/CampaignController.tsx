@@ -1,6 +1,6 @@
 'use client'
 import { useState, useEffect } from 'react'
-import { api, type Campaign, type Session } from '@/lib/api'
+import { api, type Campaign, type Session, type Lead } from '@/lib/api'
 import { previewSpintax } from '@/lib/spintax'
 
 interface Props {
@@ -36,6 +36,7 @@ export default function CampaignController({ sessions, selectedPhone, onStatsRef
   const [addingLeads, setAddingLeads]   = useState(false)
   const [addedCount, setAddedCount]     = useState<number | null>(null)
   const [aiCriteria, setAiCriteria]     = useState('')
+  const [aiStats, setAiStats]           = useState<{ hot: number; warm: number; cold: number; irrelevant: number; unscored: number }>({ hot: 0, warm: 0, cold: 0, irrelevant: 0, unscored: 0 })
 
   // Find the selected session object (for UUID)
   const selectedSession = sessions.find(s => s.phone === selectedPhone) || null
@@ -47,6 +48,21 @@ export default function CampaignController({ sessions, selectedPhone, onStatsRef
   useEffect(() => {
     setSelected(null)
   }, [selectedPhone])
+
+  // Load AI score stats when campaign changes
+  useEffect(() => {
+    if (!selected) { setAiStats({ hot: 0, warm: 0, cold: 0, irrelevant: 0, unscored: 0 }); return }
+    api.leads.list({ campaign_id: selected.id, limit: 1000 })
+      .then(res => {
+        const counts = { hot: 0, warm: 0, cold: 0, irrelevant: 0, unscored: 0 }
+        for (const l of res.data) {
+          if (l.ai_score && l.ai_score in counts) counts[l.ai_score as keyof typeof counts]++
+          else counts.unscored++
+        }
+        setAiStats(counts)
+      })
+      .catch(() => {})
+  }, [selected?.id, selected?.total_sent]) // eslint-disable-line react-hooks/exhaustive-deps
 
   async function loadCampaigns() {
     try {
@@ -461,6 +477,33 @@ export default function CampaignController({ sessions, selectedPhone, onStatsRef
               <p className="text-[#484f58] text-[10px]">Ошибки</p>
             </div>
           </div>
+
+          {/* AI Lead Scores — show when any leads have been scored */}
+          {(aiStats.hot > 0 || aiStats.warm > 0 || aiStats.cold > 0 || aiStats.irrelevant > 0) && (
+            <div className="bg-[#0d1117] border border-purple-900/40 rounded-lg p-2.5">
+              <p className="text-purple-400 text-[10px] uppercase tracking-wider font-bold mb-1.5">
+                ИИ-Детектор
+              </p>
+              <div className="grid grid-cols-4 gap-1.5 text-center">
+                <div className="bg-red-950/30 rounded py-1.5 px-1" title="Горячие — полностью соответствуют критериям">
+                  <p className="text-red-400 text-sm font-bold">{aiStats.hot}</p>
+                  <p className="text-red-400/60 text-[9px]">HOT</p>
+                </div>
+                <div className="bg-yellow-950/30 rounded py-1.5 px-1" title="Тёплые — частичный интерес">
+                  <p className="text-yellow-400 text-sm font-bold">{aiStats.warm}</p>
+                  <p className="text-yellow-400/60 text-[9px]">WARM</p>
+                </div>
+                <div className="bg-blue-950/30 rounded py-1.5 px-1" title="Холодные — минимальный интерес">
+                  <p className="text-blue-400 text-sm font-bold">{aiStats.cold}</p>
+                  <p className="text-blue-400/60 text-[9px]">COLD</p>
+                </div>
+                <div className="bg-zinc-800/50 rounded py-1.5 px-1" title="Нерелевантные — отказ, спам, не по теме">
+                  <p className="text-zinc-500 text-sm font-bold">{aiStats.irrelevant}</p>
+                  <p className="text-zinc-500/60 text-[9px]">N/A</p>
+                </div>
+              </div>
+            </div>
+          )}
         </div>
       )}
 
