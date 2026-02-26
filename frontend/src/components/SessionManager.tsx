@@ -200,6 +200,22 @@ export default function SessionManager({ sessions, campaigns, onRefresh, selecte
     }
   }
 
+  async function reconnectAndShowQR(p: string) {
+    setConnecting(p); setError(null)
+    try {
+      await api.sessions.connect(p)
+      // Wait for QR to generate then try to show it
+      await new Promise(r => setTimeout(r, 3000))
+      const res = await api.sessions.qr(p)
+      if (res?.qrCode) setQrModal(res.qrCode)
+      onRefresh()
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : 'Ошибка переподключения')
+    } finally {
+      setConnecting(null)
+    }
+  }
+
   /** Get per-session stats from campaigns */
   function getSessionStats(session: Session) {
     const sessionCampaigns = campaigns.filter(c => c.session_id === session.id)
@@ -391,28 +407,27 @@ export default function SessionManager({ sessions, campaigns, onRefresh, selecte
                 </button>
               )}
 
-              {/* Initializing — show pulse indicator + reconnect option */}
-              {s.status === 'initializing' && (
+              {/* QR button — show when QR available (initializing or qr_pending) */}
+              {(s.status === 'initializing' || s.status === 'qr_pending') && s.qrCode && (
                 <button
-                  onClick={(e) => { e.stopPropagation(); connectSession(s.phone) }}
-                  disabled={connecting === s.phone}
-                  className="text-blue-400 text-[10px] border border-blue-700/50 bg-blue-950/30 rounded px-3 py-1
-                             hover:bg-blue-900/40 transition-colors cursor-pointer disabled:opacity-50
-                             disabled:cursor-not-allowed font-bold animate-pulse"
-                  title="Нажми для переподключения если завис"
-                >
-                  {connecting === s.phone ? '...' : '⟳ Переподключить'}
-                </button>
-              )}
-
-              {/* QR button — only when waiting for scan */}
-              {s.status === 'qr_pending' && (
-                <button
-                  onClick={(e) => { e.stopPropagation(); s.qrCode ? setQrModal(s.qrCode!) : showQR(s.phone) }}
+                  onClick={(e) => { e.stopPropagation(); setQrModal(s.qrCode!) }}
                   className="text-yellow-400 text-[10px] border border-yellow-600/50 bg-yellow-950/30 rounded px-3 py-1
                              hover:bg-yellow-900/40 transition-colors cursor-pointer font-bold animate-pulse"
                 >
                   📷 Показать QR
+                </button>
+              )}
+
+              {/* Reconnect — shown when initializing/qr_pending but no QR yet, or as secondary action */}
+              {(s.status === 'initializing' || s.status === 'qr_pending') && !s.qrCode && (
+                <button
+                  onClick={(e) => { e.stopPropagation(); reconnectAndShowQR(s.phone) }}
+                  disabled={connecting === s.phone}
+                  className="text-blue-400 text-[10px] border border-blue-700/50 bg-blue-950/30 rounded px-3 py-1
+                             hover:bg-blue-900/40 transition-colors cursor-pointer disabled:opacity-50
+                             disabled:cursor-not-allowed font-bold animate-pulse"
+                >
+                  {connecting === s.phone ? '...' : '⟳ Переподключить'}
                 </button>
               )}
 
@@ -459,13 +474,27 @@ export default function SessionManager({ sessions, campaigns, onRefresh, selecte
           onClick={() => setQrModal(null)}
         >
           <div
-            className="bg-zinc-900 border border-zinc-700 rounded-lg p-6 flex flex-col items-center gap-4 shadow-2xl"
+            className="bg-zinc-900 border border-zinc-700 rounded-lg p-6 flex flex-col items-center gap-4 shadow-2xl relative"
             onClick={e => e.stopPropagation()}
           >
+            {/* Close button */}
+            <button
+              onClick={() => setQrModal(null)}
+              className="absolute top-2 right-2 text-zinc-500 hover:text-white text-lg w-8 h-8 flex items-center justify-center
+                         rounded-full hover:bg-zinc-800 transition-colors cursor-pointer"
+            >
+              ✕
+            </button>
             <p className="text-green-400 font-bold text-sm tracking-widest uppercase">Сканируй в WhatsApp → Привязанные устройства</p>
             {/* eslint-disable-next-line @next/next/no-img-element */}
             <img src={qrModal} alt="QR" className="w-64 h-64 rounded bg-white p-2" />
-            <p className="text-zinc-600 text-xs">QR истекает через ~60с. Нажми за окном чтобы закрыть.</p>
+            <button
+              onClick={() => setQrModal(null)}
+              className="text-zinc-400 hover:text-white text-xs border border-zinc-700 rounded px-4 py-1.5
+                         hover:bg-zinc-800 transition-colors cursor-pointer"
+            >
+              Закрыть
+            </button>
           </div>
         </div>
       )}
