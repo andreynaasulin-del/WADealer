@@ -9,6 +9,7 @@ import LiveLogs, { type LogEntry } from '@/components/LiveLogs'
 import StatsBar from '@/components/StatsBar'
 import QuickSend from '@/components/QuickSend'
 import CRMPanel from '@/components/CRMPanel'
+import AIChat from '@/components/AIChat'
 
 const MAX_LOGS = 500
 
@@ -29,6 +30,7 @@ export default function WhatsAppDashboard() {
   const [generatingInvite, setGeneratingInvite] = useState(false)
   const [copiedToken, setCopiedToken]       = useState<string | null>(null)
   const [showCRM, setShowCRM]               = useState(false)
+  const [showAI, setShowAI]                 = useState(false)
   const [demoMode, setDemoMode]             = useState(false)
 
   useEffect(() => {
@@ -186,6 +188,18 @@ export default function WhatsAppDashboard() {
             {showCRM ? '✕' : '💬'}<span className="hidden sm:inline"> CRM</span>
           </button>
 
+          {/* AI Chat toggle */}
+          <button
+            onClick={() => setShowAI(!showAI)}
+            className={`text-[10px] sm:text-xs px-1.5 sm:px-2.5 py-1 rounded border transition-colors cursor-pointer font-medium ${
+              showAI
+                ? 'bg-purple-900/40 text-purple-400 border-purple-700'
+                : 'text-[#7d8590] border-[#30363d] hover:text-[#e6edf3] hover:border-[#484f58]'
+            }`}
+          >
+            {showAI ? '✕' : '🤖'}<span className="hidden sm:inline"> AI</span>
+          </button>
+
           {/* Admin toggle */}
           <button
             onClick={toggleAdmin}
@@ -272,6 +286,27 @@ export default function WhatsAppDashboard() {
                 sessions={sessions}
                 selectedPhone={selectedPhone}
                 onClose={() => setShowCRM(false)}
+              />
+            </aside>
+          </>
+        )}
+
+        {/* AI Chat — full-screen overlay on mobile, sidebar on desktop (RIGHT side) */}
+        {showAI && (
+          <>
+            {/* Mobile: full-screen overlay */}
+            <div className="md:hidden fixed inset-0 z-40 bg-[#0d1117] flex flex-col overflow-hidden"
+                 style={{ top: 'var(--header-h, 44px)' }}>
+              <AIChat
+                campaigns={campaigns}
+                onClose={() => setShowAI(false)}
+              />
+            </div>
+            {/* Desktop: sidebar on right */}
+            <aside className="hidden md:flex w-80 xl:w-96 shrink-0 border-l border-[#30363d] flex-col overflow-hidden bg-[#161b22] order-last">
+              <AIChat
+                campaigns={campaigns}
+                onClose={() => setShowAI(false)}
               />
             </aside>
           </>

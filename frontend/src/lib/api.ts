@@ -163,6 +163,24 @@ export const api = {
     deleteInvite: (id: string) => req<void>(`/auth/invite/${id}`, { method: 'DELETE' }),
   },
 
+  ai: {
+    chat: (messages: { role: 'user' | 'assistant'; content: string }[], context?: string) =>
+      req<{ reply: string }>('/ai/chat', {
+        method: 'POST',
+        body: JSON.stringify({ messages, context }),
+      }),
+    suggestTemplate: (business: string, goal?: string, tone?: string) =>
+      req<{ templates: { text: string; description: string }[] }>('/ai/suggest-template', {
+        method: 'POST',
+        body: JSON.stringify({ business, goal, tone }),
+      }),
+    replySuggest: (leadMessage: string, ourMessage?: string, goal?: string) =>
+      req<{ replies: { text: string; strategy: string }[] }>('/ai/reply-suggest', {
+        method: 'POST',
+        body: JSON.stringify({ leadMessage, ourMessage, goal }),
+      }),
+  },
+
   crm: {
     conversations: () => req<Conversation[]>('/crm/conversations'),
     messages: (phone: string, limit = 50, offset = 0) =>

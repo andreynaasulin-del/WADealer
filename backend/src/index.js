@@ -11,6 +11,7 @@ import leadRoutes     from './routes/leads.js'
 import statsRoutes    from './routes/stats.js'
 import telegramRoutes from './routes/telegram.js'
 import crmRoutes      from './routes/crm.js'
+import aiChatRoutes   from './routes/ai-chat.js'
 import {
   dbValidateAuthSession,
   dbCountInviteTokens,
@@ -90,6 +91,7 @@ await app.register(leadRoutes)
 await app.register(statsRoutes)
 await app.register(telegramRoutes)
 await app.register(crmRoutes)
+await app.register(aiChatRoutes)
 
 // ─── WebSocket endpoint — live logs & events ─────────────────────────────────
 // @fastify/websocket v8 passes a WebSocketStream (Duplex); raw WS is at .socket
