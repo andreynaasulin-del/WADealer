@@ -96,7 +96,12 @@ Return JSON with this structure:
  * @returns {Promise<string|null>}
  */
 export async function generateAutoReply(history) {
-  if (!openai) return null
+  if (!openai) {
+    console.log('[AI-Debug] openai client is null — OPENAI_API_KEY missing or invalid')
+    return null
+  }
+
+  console.log(`[AI-Debug] generateAutoReply called, history length: ${history?.length}`)
 
   // ── Hard limits (before calling API) ─────────────────────────────────────
   const ourMessages = history.filter(m => m.direction === 'outbound')
