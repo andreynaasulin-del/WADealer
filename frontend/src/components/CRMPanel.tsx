@@ -136,7 +136,7 @@ export default function CRMPanel({ sessions, selectedPhone, onClose }: Props) {
                 ) : (
                   messages.map(msg => {
                     // Parse media from message body
-                    const mediaMatch = msg.body?.match(/^\[media:(image|video|audio|document|sticker):(.+?)\](.*)$/s)
+                    const mediaMatch = msg.body?.match(/^\[media:(image|video|audio|document|sticker):(.+?)\]([\s\S]*)$/)
                     const isMedia = !!mediaMatch
                     const mediaType = mediaMatch?.[1]
                     const mediaUrl = mediaMatch?.[2]
