@@ -381,22 +381,12 @@ export class Orchestrator {
       // Check campaign status — only auto-reply if campaign is active
       const campaigns = await db.dbGetAllCampaigns()
       const campaign = campaigns.find(c => c.id === lead.campaign_id)
-      if (!campaign) {
-        this.log(sessionPhone, `🤖 AI: ${phoneKey} — кампания не найдена (id=${lead.campaign_id})`, 'warn')
-        return
-      }
-      if (campaign.status === 'stopped') {
-        this.log(sessionPhone, `🤖 AI: ${phoneKey} — кампания остановлена`, 'warn')
-        return
-      }
+      if (!campaign) return
+      if (campaign.status === 'stopped') return
 
       // Get full conversation history
       const messages = await db.dbGetConversationMessages(remotePhone, 100)
-      if (!messages || messages.length < 2) {
-        this.log(sessionPhone, `🤖 AI: ${phoneKey} — мало сообщений (${messages?.length || 0})`, 'warn')
-        return
-      }
-      this.log(sessionPhone, `🤖 AI: ${phoneKey} — вызываю generateAutoReply (${messages.length} сообщений)`)
+      if (!messages || messages.length < 2) return
 
       // Generate next question
       const nextMsg = await generateAutoReply(messages)

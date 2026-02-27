@@ -224,11 +224,15 @@ export class Session extends EventEmitter {
             }, 2_000)
 
           } else {
-            // Всё остальное (timeout, network drop, packet loss и т.д.) — авто-реконнект
-            // NOTE: НЕ пишем 'offline' в БД — оставляем 'online', чтобы при рестарте PM2
-            // restoreFromDB() мог автоматически переподключить сессию.
-            // Статус в памяти ставим 'initializing' через _scheduleReconnect.
-            this._scheduleReconnect(reason, code)
+            // Всё остальное (timeout, 428, network drop и т.д.) — НЕ реконнектим автоматически.
+            // Пользователь сам решает когда подключать. Нажми «Подключить» в панели.
+            this.reconnectAttempts = 0
+            clearTimeout(this._reconnectTimer)
+            this.log(`Соединение потеряно (код ${code}: ${reason}) — нажми Подключить для реконнекта`, 'warn')
+            this.status = 'offline'
+            this.orchestrator.broadcast({ type: 'session_update', phone: this.phone, status: 'offline' })
+            // Не пишем offline в DB — при PM2 restart, sessions с status=online будут авто-подключены
+            // (это единственный авто-реконнект: при перезапуске процесса)
           }
         }
       })
