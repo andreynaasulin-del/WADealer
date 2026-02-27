@@ -276,10 +276,7 @@ export class Orchestrator {
     let leadId = null
     let lead = null
     let resolvedPhone = fromPhone
-
-    // New inbound message → reset "conversation done" flag so AI can respond to new messages
     const inboundKey = fromPhone.replace(/\D/g, '')
-    this._aiConversationDone.delete(inboundKey)
 
     try {
       // ── LID Resolution ──────────────────────────────────────────────────
@@ -321,6 +318,9 @@ export class Orchestrator {
     // Store inbound message for CRM — use resolved phone
     if (text) {
       await this.storeMessage(sessionPhone, resolvedPhone, 'inbound', text, null, leadId)
+      // Only reset "conversation done" flag for genuinely new messages
+      // (prevents Baileys history replay from triggering infinite retries)
+      this._aiConversationDone.delete(inboundKey)
     }
     this.broadcast({ type: 'reply_received', phone: resolvedPhone })
 
@@ -665,9 +665,14 @@ export class Orchestrator {
           // Check daily limit
           if (!this.canSend(actualSessionPhone)) continue
 
-          this.log(actualSessionPhone, `🔄 Пропущенный AI-ответ для ${phone} — отправляю`)
+          // Call autoReply — it will check dupes/cooldown/done internally
           await this._autoReply(phone, actualSessionPhone, lead)
+
+          // If AI just marked it as done, don't count as retry
+          if (this._aiConversationDone.has(phone)) continue
+
           retried++
+          this.log(actualSessionPhone, `🔄 AI-ответ отправлен для ${phone}`)
 
           // Longer delay between retries to prevent spam (15s)
           await new Promise(r => setTimeout(r, 15_000))
