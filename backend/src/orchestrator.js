@@ -125,6 +125,10 @@ export class Orchestrator {
     }
     this.logBuffer.push(entry)
     if (this.logBuffer.length > this.LOG_LIMIT) this.logBuffer.shift()
+    // Also output to stdout so PM2 logs capture it
+    const prefix = session ? `[${session}]` : '[SYSTEM]'
+    const lvl = level === 'error' ? '❌' : level === 'warn' ? '⚠️' : 'ℹ️'
+    console.log(`${lvl} ${prefix} ${message}`)
     this.broadcast(entry)
   }
 
@@ -413,6 +417,57 @@ export class Orchestrator {
 
     // Restore Telegram accounts
     await this.restoreTelegramAccounts()
+
+    // ── Auto-resume running campaigns after restart ─────────────────────
+    // Wait for sessions to connect, then re-load pending leads into queue
+    const RESUME_DELAY = 45_000 // 45 sec — enough for sessions to reconnect
+    setTimeout(() => this._resumeRunningCampaigns(), RESUME_DELAY)
+  }
+
+  /**
+   * After PM2 restart, re-populate the queue for any campaign with status='running'.
+   * This fixes the "queue empty after restart" bug.
+   */
+  async _resumeRunningCampaigns() {
+    try {
+      const campaigns = await db.dbGetAllCampaigns()
+      for (const campaign of campaigns) {
+        if (campaign.status !== 'running') continue
+
+        const leads = await db.dbGetPendingLeads(campaign.id)
+        if (leads.length === 0) {
+          this.log(null, `Кампания "${campaign.name}" running, но нет pending лидов — пропускаю`)
+          continue
+        }
+
+        // Find online sessions
+        let onlineSessions = this.getAllSessionStates()
+          .filter(s => s.status === 'online')
+          .map(s => s.phone)
+
+        if (onlineSessions.length === 0) {
+          this.log(null, `Кампания "${campaign.name}": нет онлайн-сессий для возобновления`, 'warn')
+          continue
+        }
+
+        // Round-robin into queue
+        for (let i = 0; i < leads.length; i++) {
+          const lead = leads[i]
+          const sessionPhone = onlineSessions[i % onlineSessions.length]
+          this.queue.add({
+            id: lead.id, phone: lead.phone, campaignId: campaign.id,
+            template: campaign.template_text, sessionPhone,
+            delayMinSec: campaign.delay_min_sec, delayMaxSec: campaign.delay_max_sec,
+          })
+        }
+
+        this.queue.start()
+        const perSession = Math.ceil(leads.length / onlineSessions.length)
+        this.log(null, `♻ Кампания "${campaign.name}" возобновлена — ${leads.length} лидов на ${onlineSessions.length} сессий (~${perSession}/сессию)`)
+      }
+    } catch (err) {
+      this.log(null, `Ошибка возобновления кампаний: ${err.message}`, 'error')
+    }
   }
 
   // ─── Campaign / Queue helpers (WhatsApp) ──────────────────────────────────
