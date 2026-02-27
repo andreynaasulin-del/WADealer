@@ -63,6 +63,12 @@ export class Session extends EventEmitter {
     this._reconnectTimer = null
     this._keepaliveTimer = null
     this._401retried = false   // flag: did we already retry after 401?
+
+    // ── LID → Phone mapping (WhatsApp Linked Devices) ─────────────────────
+    // WhatsApp Linked Devices use internal LID numbers for message JIDs.
+    // We build a reverse map from Baileys contact events.
+    /** @type {Map<string, string>} lid number → real phone */
+    this._lidToPhone = new Map()
   }
 
   _scheduleReconnect(reason, code) {
@@ -228,15 +234,29 @@ export class Session extends EventEmitter {
 
       this.sock.ev.on('creds.update', saveCreds)
 
+      // ── LID mapping: Baileys contact events ──────────────────────────────
+      // WhatsApp Linked Devices use internal LID JIDs. Baileys provides
+      // contact updates that map lid ↔ phone number.
+      this.sock.ev.on('contacts.upsert', (contacts) => this._processContacts(contacts))
+      this.sock.ev.on('contacts.update', (updates) => this._processContacts(updates))
+
       // Track messages → store for CRM + AI classification
       this.sock.ev.on('messages.upsert', ({ messages, type }) => {
         if (type !== 'notify') return
         for (const msg of messages) {
           const rawJid = msg.key.remoteJid || ''
           if (rawJid.includes('@g.us')) continue  // skip groups
-          // Strip ALL JID suffixes: @s.whatsapp.net, @lid, etc.
-          const from = rawJid.replace(/@.*$/, '')
-          if (!from) continue
+
+          const rawFrom = rawJid.replace(/@.*$/, '')
+          if (!rawFrom) continue
+
+          const isLid = rawJid.includes('@lid')
+
+          // ── Resolve LID → real phone ──────────────────────────────────
+          let from = rawFrom
+          if (isLid && this._lidToPhone.has(rawFrom)) {
+            from = this._lidToPhone.get(rawFrom)
+          }
 
           // Extract text from various message types
           const text = msg.message?.conversation
@@ -253,9 +273,12 @@ export class Session extends EventEmitter {
 
           // Inbound message
           if (text) {
-            this.log(`Входящий ответ от ${from}`)
+            const lidNote = isLid ? ` (LID: ${rawFrom}${from !== rawFrom ? ' → ' + from : ' ⚠ unresolved'})` : ''
+            this.log(`Входящий ответ от ${from}${lidNote}`)
           }
-          this.orchestrator.handleReply(from, text, this.phone)
+          // Pass original LID for orchestrator-level resolution if local map didn't resolve
+          const unresolvedLid = (isLid && from === rawFrom) ? rawFrom : null
+          this.orchestrator.handleReply(from, text, this.phone, unresolvedLid)
         }
       })
 
@@ -276,6 +299,37 @@ export class Session extends EventEmitter {
     this.log('Сессия остановлена')
     this.orchestrator.broadcast({ type: 'session_update', phone: this.phone, status: 'offline' })
     await this.orchestrator.db.dbUpdateSessionStatus(this.phone, 'offline')
+  }
+
+  // ── LID mapping helpers ──────────────────────────────────────────────────
+
+  /**
+   * Process contact updates from Baileys to build LID → phone mapping.
+   * Baileys fires contacts.upsert / contacts.update with objects like:
+   *   { id: 'phone@s.whatsapp.net', lid: 'lid_number@lid', ... }
+   */
+  _processContacts(contacts) {
+    let mapped = 0
+    for (const c of contacts) {
+      const lid = (c.lid || '').replace(/@.*$/, '')
+      const phone = (c.id || '').replace(/@.*$/, '')
+      if (lid && phone && lid !== phone) {
+        this._lidToPhone.set(lid, phone)
+        // Also update orchestrator's global map
+        this.orchestrator._lidMap?.set(lid, phone)
+        mapped++
+      }
+    }
+    if (mapped > 0) {
+      this.log(`📇 ${mapped} LID→Phone маппингов из контактов (всего: ${this._lidToPhone.size})`)
+    }
+  }
+
+  /**
+   * Resolve a LID number to real phone. Returns null if unknown.
+   */
+  resolveLid(lid) {
+    return this._lidToPhone.get(lid) || null
   }
 
   async sendMessage(toPhone, text) {

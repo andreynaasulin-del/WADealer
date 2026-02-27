@@ -41,6 +41,9 @@ export class Orchestrator {
     /** Daily send limit per session — { sessionPhone: { count, day } } */
     this._dailySent = new Map()
     this.DAILY_LIMIT = 30
+
+    /** Global LID → Phone map (WhatsApp Linked Devices resolution) */
+    this._lidMap = new Map()
   }
 
   // ─── Daily send limit ──────────────────────────────────────────────────────
@@ -210,13 +213,33 @@ export class Orchestrator {
     })
   }
 
-  async handleReply(fromPhone, text, sessionPhone) {
+  async handleReply(fromPhone, text, sessionPhone, unresolvedLid = null) {
     let leadId = null
     let lead = null
+    let resolvedPhone = fromPhone
+
     try {
+      // ── LID Resolution ──────────────────────────────────────────────────
+      // WhatsApp Linked Devices use internal LID numbers (e.g. 197882716151908)
+      // instead of real phone numbers. We need to resolve LID → phone to:
+      // 1) Match the lead in our database
+      // 2) Store messages under the correct phone for CRM
+      // 3) Send AI auto-replies to the correct JID
+      if (unresolvedLid) {
+        const resolved = await this._resolveLid(unresolvedLid, sessionPhone)
+        if (resolved) {
+          resolvedPhone = resolved
+          this.log(sessionPhone, `🔗 LID resolved: ${unresolvedLid} → ${resolved}`)
+          // Migrate existing messages from LID to real phone
+          try { await db.dbMigrateLidMessages(unresolvedLid, resolved) } catch (_) {}
+        } else {
+          this.log(sessionPhone, `⚠ LID unresolved: ${unresolvedLid} — DB fallback failed`, 'warn')
+        }
+      }
+
       // Search both 'sent' and 'replied' leads — so AI auto-reply works
       // for the entire conversation, not just the first reply
-      lead = await db.dbFindLeadByPhone(fromPhone)
+      lead = await db.dbFindLeadByPhone(resolvedPhone)
       if (lead) {
         leadId = lead.id
         // Mark as replied only if currently 'sent' (first reply)
@@ -228,20 +251,61 @@ export class Orchestrator {
           this._classifyLead(lead, text, sessionPhone)
         }
       }
-    } catch (_) {}
-
-    // Store inbound message for CRM
-    if (text) {
-      await this.storeMessage(sessionPhone, fromPhone, 'inbound', text, null, leadId)
+    } catch (err) {
+      this.log(sessionPhone, `handleReply ошибка: ${err.message}`, 'error')
     }
-    this.broadcast({ type: 'reply_received', phone: fromPhone })
+
+    // Store inbound message for CRM — use resolved phone
+    if (text) {
+      await this.storeMessage(sessionPhone, resolvedPhone, 'inbound', text, null, leadId)
+    }
+    this.broadcast({ type: 'reply_received', phone: resolvedPhone })
 
     // ── AI auto-reply: continue the conversation ──────────────────────────
     if (lead && text) {
-      this._autoReply(fromPhone, sessionPhone, lead).catch(err => {
+      this._autoReply(resolvedPhone, sessionPhone, lead).catch(err => {
         this.log(sessionPhone, `AI авто-ответ ошибка: ${err.message}`, 'error')
       })
     }
+  }
+
+  // ─── LID Resolution ────────────────────────────────────────────────────────
+
+  /**
+   * Resolve a WhatsApp LID (Linked ID) number to a real phone number.
+   * Uses multiple strategies:
+   * 1. In-memory global cache
+   * 2. Session's Baileys contact map
+   * 3. DB-based: find outbound phones from same session that haven't received inbound yet
+   */
+  async _resolveLid(lid, sessionPhone) {
+    // Strategy 1: Global in-memory cache
+    if (this._lidMap.has(lid)) {
+      return this._lidMap.get(lid)
+    }
+
+    // Strategy 2: Session's Baileys contact-derived map
+    const session = this.sessions.get(sessionPhone)
+    if (session?._lidToPhone?.has(lid)) {
+      const resolved = session._lidToPhone.get(lid)
+      this._lidMap.set(lid, resolved)
+      return resolved
+    }
+
+    // Strategy 3: DB-based — find phones we sent outbound to from this session
+    // that don't have any inbound messages yet (their reply came as LID)
+    try {
+      const resolved = await db.dbResolveLidByOutbound(sessionPhone, lid)
+      if (resolved) {
+        this._lidMap.set(lid, resolved)
+        if (session) session._lidToPhone.set(lid, resolved)
+        return resolved
+      }
+    } catch (err) {
+      this.log(sessionPhone, `LID DB resolution error: ${err.message}`, 'error')
+    }
+
+    return null
   }
 
   /**

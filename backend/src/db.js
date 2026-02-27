@@ -739,4 +739,77 @@ export async function dbGetLastOutboundMessage(remote_phone) {
   return data
 }
 
+// ─── LID Resolution helpers ───────────────────────────────────────────────────
+
+/**
+ * Resolve a LID number by finding phones we sent outbound to from this session
+ * that haven't received any inbound messages yet.
+ * When a reply comes from a LID, it means the real phone's inbound was never recorded
+ * under the real phone — so we find outbound-only phones as candidates.
+ *
+ * @param {string} sessionPhone — the WA session that received the LID message
+ * @param {string} lidPhone — the unresolved LID number
+ * @returns {Promise<string|null>} resolved real phone number or null
+ */
+export async function dbResolveLidByOutbound(sessionPhone, lidPhone) {
+  // Get all phones we sent outbound to from this session (most recent first)
+  const { data: outbound, error: outErr } = await supabase
+    .from('wa_messages')
+    .select('remote_phone, created_at')
+    .eq('session_phone', sessionPhone)
+    .eq('direction', 'outbound')
+    .order('created_at', { ascending: false })
+    .limit(100)
+
+  if (outErr || !outbound || outbound.length === 0) return null
+
+  // Get unique outbound phones (preserve order = most recent first)
+  const seen = new Set()
+  const outboundPhones = []
+  for (const m of outbound) {
+    if (!seen.has(m.remote_phone)) {
+      seen.add(m.remote_phone)
+      outboundPhones.push(m.remote_phone)
+    }
+  }
+
+  // Get phones that already have inbound messages (real phone, not LID)
+  const { data: inbound } = await supabase
+    .from('wa_messages')
+    .select('remote_phone')
+    .eq('session_phone', sessionPhone)
+    .eq('direction', 'inbound')
+    .in('remote_phone', outboundPhones)
+
+  const phonesWithInbound = new Set((inbound || []).map(m => m.remote_phone))
+
+  // Filter: phones that have outbound but no inbound = their reply came as LID
+  const candidates = outboundPhones.filter(p => !phonesWithInbound.has(p))
+
+  if (candidates.length === 0) return null
+
+  // Return the most recent candidate (highest confidence)
+  return candidates[0]
+}
+
+/**
+ * Migrate wa_messages from LID phone to real phone number.
+ * This merges the conversation in CRM.
+ *
+ * @param {string} lidPhone — the LID number used as remote_phone
+ * @param {string} realPhone — the resolved real phone number
+ */
+export async function dbMigrateLidMessages(lidPhone, realPhone) {
+  const { error } = await supabase
+    .from('wa_messages')
+    .update({ remote_phone: realPhone })
+    .eq('remote_phone', lidPhone)
+
+  if (error) {
+    console.error(`[DB] LID migration error (${lidPhone} → ${realPhone}):`, error.message)
+  } else {
+    console.log(`[DB] Migrated messages: ${lidPhone} → ${realPhone}`)
+  }
+}
+
 export default supabase
