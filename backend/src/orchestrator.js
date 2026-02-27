@@ -248,7 +248,15 @@ export class Orchestrator {
         const hasCreds = fs.existsSync(path.join(credsDir, 'creds.json'))
 
         if (s.status === 'online' || hasCreds) {
-          session.start()
+          // ── Стаггеринг: запускаем сессии с интервалом 15-30с друг от друга ──
+          // Чтобы WhatsApp не видел 3-4 одновременных подключения → меньше банов
+          const staggerDelay = autoConnected * (15_000 + Math.floor(Math.random() * 15_000))
+          if (staggerDelay === 0) {
+            session.start()
+          } else {
+            setTimeout(() => session.start(), staggerDelay)
+            this.log(s.phone_number, `Отложенный старт через ${Math.round(staggerDelay / 1000)}с (стаггеринг)`)
+          }
           autoConnected++
         } else {
           offline++

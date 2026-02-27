@@ -61,6 +61,8 @@ export class Session extends EventEmitter {
     this.connectedAt = null    // ISO timestamp when session went online
     this.reconnectAttempts = 0 // for exponential backoff
     this._reconnectTimer = null
+    this._keepaliveTimer = null
+    this._401retried = false   // flag: did we already retry after 401?
   }
 
   _scheduleReconnect(reason, code) {
@@ -145,9 +147,20 @@ export class Session extends EventEmitter {
           this.qrCode = null
           this.connectedAt = new Date().toISOString()
           this.reconnectAttempts = 0  // сброс backoff при успешном коннекте
+          this._401retried = false    // сброс флага 401
           this.log(`Подключено ✓ (прокси ${proxyHost}:${proxyPort})`)
           this.orchestrator.broadcast({ type: 'session_update', phone: this.phone, status: 'online', qrCode: null })
           await this.orchestrator.db.dbUpdateSessionStatus(this.phone, 'online')
+
+          // ── Keepalive: отправляем presence каждые 4 минуты чтобы WA не отключал ──
+          clearInterval(this._keepaliveTimer)
+          this._keepaliveTimer = setInterval(async () => {
+            try {
+              if (this.sock && this.status === 'online') {
+                await this.sock.sendPresenceUpdate('available')
+              }
+            } catch (_) { /* тихо, при следующем цикле разберётся */ }
+          }, 4 * 60 * 1000) // каждые 4 минуты
         }
 
         if (connection === 'close') {
@@ -155,14 +168,27 @@ export class Session extends EventEmitter {
           const reason = lastDisconnect?.error?.message || 'unknown'
 
           if (code === DisconnectReason.loggedOut || code === 401) {
-            // 401 = разлогинен — удаляем битые credentials, нужен новый QR
-            const sessionDir = path.resolve(SESSIONS_DIR, this.phone.replace(/\+/g, ''))
-            try { fs.rmSync(sessionDir, { recursive: true, force: true }) } catch (_) {}
-            this.reconnectAttempts = 0
-            this.log(`Разлогинен (код ${code}) — credentials очищены, нажми Подключить для нового QR`, 'warn')
-            this.status = 'offline'
-            this.orchestrator.broadcast({ type: 'session_update', phone: this.phone, status: 'offline' })
-            await this.orchestrator.db.dbUpdateSessionStatus(this.phone, 'offline')
+            // 401 может быть временным — пробуем 1 раз переподключиться
+            if (!this._401retried) {
+              this._401retried = true
+              this.log(`Код 401 — пробуем переподключиться (creds сохранены)...`, 'warn')
+              this.status = 'initializing'
+              this.orchestrator.broadcast({ type: 'session_update', phone: this.phone, status: 'initializing' })
+              clearTimeout(this._reconnectTimer)
+              this._reconnectTimer = setTimeout(() => {
+                if (!this.stopped) this.start()
+              }, 5_000)
+            } else {
+              // Повторный 401 — реально разлогинен, удаляем credentials
+              this._401retried = false
+              const sessionDir = path.resolve(SESSIONS_DIR, this.phone.replace(/\+/g, ''))
+              try { fs.rmSync(sessionDir, { recursive: true, force: true }) } catch (_) {}
+              this.reconnectAttempts = 0
+              this.log(`Разлогинен (код ${code}) — credentials очищены, нажми Подключить для нового QR`, 'warn')
+              this.status = 'offline'
+              this.orchestrator.broadcast({ type: 'session_update', phone: this.phone, status: 'offline' })
+              await this.orchestrator.db.dbUpdateSessionStatus(this.phone, 'offline')
+            }
 
           } else if (code === 403) {
             // 403 = заблокирован WhatsApp — не реконнектим
@@ -241,6 +267,7 @@ export class Session extends EventEmitter {
     this.stopped = true
     this.reconnectAttempts = 0
     clearTimeout(this._reconnectTimer)
+    clearInterval(this._keepaliveTimer)
     this.status = 'offline'
     try { await this.sock?.end() } catch (_) {}
     this.log('Сессия остановлена')
