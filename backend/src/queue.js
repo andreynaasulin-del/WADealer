@@ -151,6 +151,12 @@ export class MessageQueue {
       // Remove from queue before attempting send
       this.items.shift()
 
+      // Daily limit check
+      if (itemPlatform === 'whatsapp' && !this.orchestrator.canSend(item.sessionPhone)) {
+        this.orchestrator.log(item.sessionPhone, `⚠ Дневной лимит ${this.orchestrator.DAILY_LIMIT} сообщений — пропускаю ${item.phone}`, 'warn', itemPlatform)
+        continue
+      }
+
       try {
         const text = parseSpintax(item.template)
         const result = await session.sendMessage(item.phone, text)
@@ -176,10 +182,16 @@ export class MessageQueue {
           ])
         }
 
+        // Track daily limit
+        if (itemPlatform === 'whatsapp') {
+          this.orchestrator._incrementDailyCount(item.sessionPhone)
+        }
+
         this.orchestrator.broadcast({ type: 'stats_update', sentDelta: 1, inQueueDelta: -1, platform: itemPlatform })
+        const dailyLeft = this.orchestrator.DAILY_LIMIT - this.orchestrator._getDailyCount(item.sessionPhone)
         this.orchestrator.log(
           item.sessionPhone,
-          `✓ Отправлено на ${item.phone} (в очереди: ${this.items.length})`,
+          `✓ Отправлено на ${item.phone} (очередь: ${this.items.length}) [${dailyLeft}/${this.orchestrator.DAILY_LIMIT} осталось]`,
           'info',
           itemPlatform
         )

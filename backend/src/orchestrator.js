@@ -37,6 +37,33 @@ export class Orchestrator {
     /** In-memory log ring buffer (last 500 entries) */
     this.logBuffer = []
     this.LOG_LIMIT = 500
+
+    /** Daily send limit per session — { sessionPhone: { count, day } } */
+    this._dailySent = new Map()
+    this.DAILY_LIMIT = 30
+  }
+
+  // ─── Daily send limit ──────────────────────────────────────────────────────
+
+  _getDailyCount(sessionPhone) {
+    const today = new Date().toISOString().slice(0, 10) // YYYY-MM-DD
+    const entry = this._dailySent.get(sessionPhone)
+    if (!entry || entry.day !== today) return 0
+    return entry.count
+  }
+
+  _incrementDailyCount(sessionPhone) {
+    const today = new Date().toISOString().slice(0, 10)
+    const entry = this._dailySent.get(sessionPhone)
+    if (!entry || entry.day !== today) {
+      this._dailySent.set(sessionPhone, { count: 1, day: today })
+    } else {
+      entry.count++
+    }
+  }
+
+  canSend(sessionPhone) {
+    return this._getDailyCount(sessionPhone) < this.DAILY_LIMIT
   }
 
   // ─── Froxy proxy auto-assignment ──────────────────────────────────────────
@@ -250,35 +277,43 @@ export class Orchestrator {
         return
       }
 
-      // ── Human-like delay: 1–4 minutes random before replying ──────────
-      const readDelay = 60_000 + Math.floor(Math.random() * 180_000) // 60–240 sec
-      const readMin = (readDelay / 60_000).toFixed(1)
-      this.log(sessionPhone, `🤖 AI → ${remotePhone}: жду ${readMin} мин перед ответом...`)
-      await new Promise(r => setTimeout(r, readDelay))
+      // ── Daily limit check ────────────────────────────────────────────
+      if (!this.canSend(sessionPhone)) {
+        this.log(sessionPhone, `🤖 AI → ${remotePhone}: дневной лимит ${this.DAILY_LIMIT} сообщений достигнут`, 'warn')
+        return
+      }
 
-      // Find the session and send
+      // Find the session
       const session = this.sessions.get(sessionPhone)
       if (!session || session.status !== 'online') {
         this.log(sessionPhone, `🤖 AI: сессия офлайн, ответ не отправлен`, 'warn')
         return
       }
 
-      // Show "typing..." indicator the entire time before sending
+      // ── Respond immediately: "read" + start typing ──────────────────
       const bareJid = `${remotePhone.replace(/\D/g, '')}@s.whatsapp.net`
+
+      // Small "read" pause (1-3 sec) before typing starts
+      const readPause = 1_000 + Math.floor(Math.random() * 2_000)
+      await new Promise(r => setTimeout(r, readPause))
+
+      // Show "typing..." indicator
       try { await session.sock.sendPresenceUpdate('composing', bareJid) } catch (_) {}
 
-      // Typing duration — proportional to message length (2–8 sec)
-      const typingMs = 2_000 + Math.min(nextMsg.length * 80, 6_000)
+      // Typing duration — proportional to message length (3–10 sec)
+      const typingMs = 3_000 + Math.min(nextMsg.length * 100, 7_000)
       await new Promise(r => setTimeout(r, typingMs))
 
       try { await session.sock.sendPresenceUpdate('paused', bareJid) } catch (_) {}
 
-      // Send the message (sendMessage also does its own typing, so bypass it)
+      // Send the message directly (bypass sendMessage's own typing)
       const result = await session.sock.sendMessage(bareJid, { text: nextMsg })
       void result
+      this._incrementDailyCount(sessionPhone)
       await this.storeMessage(sessionPhone, remotePhone, 'outbound', nextMsg, null, lead.id)
 
-      this.log(sessionPhone, `🤖 AI → ${remotePhone}: "${nextMsg.substring(0, 60)}${nextMsg.length > 60 ? '...' : ''}"`)
+      const dailyLeft = this.DAILY_LIMIT - this._getDailyCount(sessionPhone)
+      this.log(sessionPhone, `🤖 AI → ${remotePhone}: "${nextMsg.substring(0, 60)}${nextMsg.length > 60 ? '...' : ''}" [осталось ${dailyLeft}/${this.DAILY_LIMIT}]`)
       this.broadcast({
         type: 'ai_auto_reply',
         sessionPhone, remotePhone,
