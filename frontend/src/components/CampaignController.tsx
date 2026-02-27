@@ -66,6 +66,7 @@ export default function CampaignController({ sessions, selectedPhone, onStatsRef
   const [simpleText, setSimpleText]     = useState('')     // lines of messages for simple mode
   const [showTemplate, setShowTemplate] = useState(true)   // collapsible template section
   const [aiStats, setAiStats]           = useState<{ hot: number; warm: number; cold: number; irrelevant: number; unscored: number }>({ hot: 0, warm: 0, cold: 0, irrelevant: 0, unscored: 0 })
+  const [repliedCount, setRepliedCount] = useState(0)
 
   // File import state
   const fileRef = useRef<HTMLInputElement>(null)
@@ -103,17 +104,20 @@ export default function CampaignController({ sessions, selectedPhone, onStatsRef
     }
   }, [campaigns, selectedPhone]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Load AI score stats when campaign changes
+  // Load AI score stats + replied count when campaign changes
   useEffect(() => {
-    if (!selected) { setAiStats({ hot: 0, warm: 0, cold: 0, irrelevant: 0, unscored: 0 }); return }
+    if (!selected) { setAiStats({ hot: 0, warm: 0, cold: 0, irrelevant: 0, unscored: 0 }); setRepliedCount(0); return }
     api.leads.list({ campaign_id: selected.id, limit: 1000 })
       .then(res => {
         const counts = { hot: 0, warm: 0, cold: 0, irrelevant: 0, unscored: 0 }
+        let replied = 0
         for (const l of res.data) {
           if (l.ai_score && l.ai_score in counts) counts[l.ai_score as keyof typeof counts]++
           else counts.unscored++
+          if (l.status === 'replied') replied++
         }
         setAiStats(counts)
+        setRepliedCount(replied)
       })
       .catch(() => {})
   }, [selected?.id, selected?.total_sent]) // eslint-disable-line react-hooks/exhaustive-deps
@@ -531,6 +535,11 @@ export default function CampaignController({ sessions, selectedPhone, onStatsRef
               <span className="text-[#7d8590]">
                 <span className="text-green-400 font-bold">{progress.sent}</span>/{progress.total} отправлено
               </span>
+              {repliedCount > 0 && (
+                <span className="text-[#7d8590]">
+                  <span className="text-cyan-400 font-bold">{repliedCount}</span> ответили
+                </span>
+              )}
               {progress.errors > 0 && (
                 <span className="text-[#7d8590]">
                   <span className="text-red-400 font-bold">{progress.errors}</span> ошибок
@@ -798,29 +807,33 @@ export default function CampaignController({ sessions, selectedPhone, onStatsRef
           </div>
 
           {/* Campaign stats mini row */}
-          <div className="grid grid-cols-4 gap-1.5 text-center">
-            <div className="bg-[#0d1117] rounded py-1.5 px-2">
+          <div className="grid grid-cols-5 gap-1 text-center">
+            <div className="bg-[#0d1117] rounded py-1.5 px-1">
               <p className="text-green-400 text-sm font-bold">{selected.total_sent}</p>
-              <p className="text-[#484f58] text-[10px]">Отправлено</p>
+              <p className="text-[#484f58] text-[9px]">Отправлено</p>
             </div>
-            <div className="bg-[#0d1117] rounded py-1.5 px-2">
+            <div className="bg-[#0d1117] rounded py-1.5 px-1">
+              <p className="text-cyan-400 text-sm font-bold">{repliedCount}</p>
+              <p className="text-[#484f58] text-[9px]">Ответили</p>
+            </div>
+            <div className="bg-[#0d1117] rounded py-1.5 px-1">
               <p className="text-blue-400 text-sm font-bold">
                 {Math.max(0, (selected.total_leads || 0) - (selected.total_sent || 0) - (selected.total_errors || 0))}
               </p>
-              <p className="text-[#484f58] text-[10px]">Осталось</p>
+              <p className="text-[#484f58] text-[9px]">Осталось</p>
             </div>
-            <div className="bg-[#0d1117] rounded py-1.5 px-2">
+            <div className="bg-[#0d1117] rounded py-1.5 px-1">
               <p className="text-red-400 text-sm font-bold">{selected.total_errors}</p>
-              <p className="text-[#484f58] text-[10px]">Ошибки</p>
+              <p className="text-[#484f58] text-[9px]">Ошибки</p>
             </div>
-            <div className="bg-[#0d1117] rounded py-1.5 px-2">
+            <div className="bg-[#0d1117] rounded py-1.5 px-1">
               <p className={`text-sm font-bold ${
                 selected.status === 'running' ? 'text-green-400' :
                 selected.status === 'paused' ? 'text-yellow-400' : 'text-[#7d8590]'
               }`}>
                 {selected.status === 'running' ? '▶' : selected.status === 'paused' ? '⏸' : '⏹'}
               </p>
-              <p className="text-[#484f58] text-[10px]">
+              <p className="text-[#484f58] text-[9px]">
                 {selected.status === 'running' ? 'Работает' : selected.status === 'paused' ? 'Пауза' : 'Стоп'}
               </p>
             </div>

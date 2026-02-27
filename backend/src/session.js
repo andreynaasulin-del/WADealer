@@ -232,8 +232,11 @@ export class Session extends EventEmitter {
       this.sock.ev.on('messages.upsert', ({ messages, type }) => {
         if (type !== 'notify') return
         for (const msg of messages) {
-          const from = msg.key.remoteJid?.replace('@s.whatsapp.net', '')
-          if (!from || from.includes('@g.us')) continue  // skip groups
+          const rawJid = msg.key.remoteJid || ''
+          if (rawJid.includes('@g.us')) continue  // skip groups
+          // Strip ALL JID suffixes: @s.whatsapp.net, @lid, etc.
+          const from = rawJid.replace(/@.*$/, '')
+          if (!from) continue
 
           // Extract text from various message types
           const text = msg.message?.conversation
