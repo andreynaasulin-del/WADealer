@@ -44,6 +44,15 @@ export class Orchestrator {
 
     /** Global LID → Phone map (WhatsApp Linked Devices resolution) */
     this._lidMap = new Map()
+
+    /** Per-phone reply lock — prevents concurrent AI replies to same contact */
+    this._replyInProgress = new Set()
+
+    /** Flag to prevent overlapping retry scans */
+    this._retryRunning = false
+
+    /** Timestamp of last outbound AI message per phone — cooldown tracking */
+    this._lastAiReplyTime = new Map()
   }
 
   // ─── Per-session WhatsApp queues ───────────────────────────────────────────
@@ -346,6 +355,21 @@ export class Orchestrator {
    * Only fires if the campaign is running or paused (not stopped).
    */
   async _autoReply(remotePhone, sessionPhone, lead) {
+    // ── Per-phone lock — prevent concurrent/duplicate AI replies ──────────
+    const phoneKey = remotePhone.replace(/\D/g, '')
+    if (this._replyInProgress.has(phoneKey)) {
+      this.log(sessionPhone, `🤖 AI: ${phoneKey} — уже генерируется ответ, пропуск`, 'warn')
+      return
+    }
+
+    // ── Cooldown — don't send if we replied less than 60s ago ─────────────
+    const lastReply = this._lastAiReplyTime.get(phoneKey)
+    if (lastReply && Date.now() - lastReply < 60_000) {
+      this.log(sessionPhone, `🤖 AI: ${phoneKey} — кулдаун (ответили ${Math.round((Date.now() - lastReply) / 1000)}с назад)`, 'warn')
+      return
+    }
+
+    this._replyInProgress.add(phoneKey)
     try {
       // Check campaign status — only auto-reply if campaign is active
       const campaigns = await db.dbGetAllCampaigns()
@@ -411,6 +435,7 @@ export class Orchestrator {
       const result = await session.sock.sendMessage(bareJid, { text: nextMsg })
       void result
       this._incrementDailyCount(sessionPhone)
+      this._lastAiReplyTime.set(phoneKey, Date.now())
       await this.storeMessage(sessionPhone, remotePhone, 'outbound', nextMsg, null, lead.id)
 
       const dailyLeft = this.DAILY_LIMIT - this._getDailyCount(sessionPhone)
@@ -440,6 +465,9 @@ export class Orchestrator {
       }
     } catch (err) {
       this.log(sessionPhone, `🤖 AI ошибка: ${err.message}`, 'error')
+    } finally {
+      // Always release the lock
+      this._replyInProgress.delete(phoneKey)
     }
   }
 
@@ -479,6 +507,10 @@ export class Orchestrator {
    * - Any transient error prevented auto-reply
    */
   async _retryMissedAutoReplies() {
+    // Prevent overlapping retry scans
+    if (this._retryRunning) return
+    this._retryRunning = true
+
     try {
       const leads = await db.dbGetRepliedLeads()
       if (leads.length === 0) return
@@ -488,6 +520,13 @@ export class Orchestrator {
         try {
           const phone = lead.phone.replace(/\D/g, '')
 
+          // Skip if reply already in progress for this phone
+          if (this._replyInProgress.has(phone)) continue
+
+          // Skip if we replied recently (cooldown)
+          const lastReply = this._lastAiReplyTime.get(phone)
+          if (lastReply && Date.now() - lastReply < 60_000) continue
+
           // Get conversation messages
           const messages = await db.dbGetConversationMessages(phone, 100)
           if (!messages || messages.length < 2) continue
@@ -496,24 +535,59 @@ export class Orchestrator {
           const lastMsg = messages[messages.length - 1]
           if (lastMsg.direction !== 'inbound') continue  // already followed up
 
+          // Check for duplicate spam: if we sent same message 3+ times, skip (already damaged)
+          const ourMsgs = messages.filter(m => m.direction === 'outbound')
+          const msgCounts = new Map()
+          for (const m of ourMsgs) {
+            const key = m.body?.toLowerCase().trim()
+            if (key) msgCounts.set(key, (msgCounts.get(key) || 0) + 1)
+          }
+          let hasDupes = false
+          for (const count of msgCounts.values()) {
+            if (count >= 3) { hasDupes = true; break }
+          }
+          if (hasDupes) {
+            // Conversation is damaged by spam — extract data and stop
+            this.log(null, `🔄 ${phone}: обнаружены дубликаты, извлекаю данные без продолжения`)
+            const extracted = await extractConversationData(messages)
+            if (extracted && lead.id) {
+              await db.dbUpdateLeadAI(lead.id, {
+                ai_score: extracted.sentiment === 'positive' ? 'hot' : 'warm',
+                ai_reason: JSON.stringify(extracted),
+              })
+            }
+            continue
+          }
+
           // Find which session sent to this lead
           const lastOutbound = await db.dbGetLastOutboundMessage(phone)
           if (!lastOutbound) continue
           const sessionPhone = lastOutbound.session_phone
 
-          // Check if session is online
-          const session = this.sessions.get(sessionPhone)
-          if (!session || session.status !== 'online') continue
+          // Check if session is online — try fallback if assigned session offline
+          let session = this.sessions.get(sessionPhone)
+          let actualSessionPhone = sessionPhone
+          if (!session || session.status !== 'online') {
+            // Fallback to any online session
+            for (const [ph, s] of this.sessions) {
+              if (s.status === 'online' && this.canSend(ph)) {
+                session = s
+                actualSessionPhone = ph
+                break
+              }
+            }
+            if (!session || session.status !== 'online') continue
+          }
 
           // Check daily limit
-          if (!this.canSend(sessionPhone)) continue
+          if (!this.canSend(actualSessionPhone)) continue
 
-          this.log(sessionPhone, `🔄 Пропущенный AI-ответ для ${phone} — отправляю`)
-          await this._autoReply(phone, sessionPhone, lead)
+          this.log(actualSessionPhone, `🔄 Пропущенный AI-ответ для ${phone} — отправляю`)
+          await this._autoReply(phone, actualSessionPhone, lead)
           retried++
 
-          // Small delay between retries to avoid rate limiting
-          await new Promise(r => setTimeout(r, 5000))
+          // Longer delay between retries to prevent spam (15s)
+          await new Promise(r => setTimeout(r, 15_000))
         } catch (err) {
           this.log(null, `🔄 Ошибка retry для ${lead.phone}: ${err.message}`, 'error')
         }
@@ -524,6 +598,8 @@ export class Orchestrator {
       }
     } catch (err) {
       this.log(null, `🔄 _retryMissedAutoReplies ошибка: ${err.message}`, 'error')
+    } finally {
+      this._retryRunning = false
     }
   }
 
