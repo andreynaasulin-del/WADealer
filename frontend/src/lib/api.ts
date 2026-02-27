@@ -129,9 +129,9 @@ export const api = {
       req<Campaign>(`/campaigns/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
     remove: (id: string) =>
       req<void>(`/campaigns/${id}`, { method: 'DELETE' }),
-    start: (id: string) => req<void>(`/campaigns/${id}/start`, { method: 'PUT' }),
-    pause: (id: string) => req<void>(`/campaigns/${id}/pause`, { method: 'PUT' }),
-    stop:  (id: string) => req<void>(`/campaigns/${id}/stop`,  { method: 'PUT' }),
+    start: (id: string) => req<void>(`/campaigns/${id}/start`, { method: 'PUT', body: '{}' }),
+    pause: (id: string) => req<void>(`/campaigns/${id}/pause`, { method: 'PUT', body: '{}' }),
+    stop:  (id: string) => req<void>(`/campaigns/${id}/stop`,  { method: 'PUT', body: '{}' }),
     queue: () => req<{ status: string; size: number }>('/campaigns/queue'),
   },
 
@@ -225,9 +225,9 @@ export const api = {
         req<TelegramCampaign>(`/telegram/campaigns/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
       remove: (id: string) =>
         req<void>(`/telegram/campaigns/${id}`, { method: 'DELETE' }),
-      start: (id: string) => req<void>(`/telegram/campaigns/${id}/start`, { method: 'PUT' }),
-      pause: (id: string) => req<void>(`/telegram/campaigns/${id}/pause`, { method: 'PUT' }),
-      stop:  (id: string) => req<void>(`/telegram/campaigns/${id}/stop`,  { method: 'PUT' }),
+      start: (id: string) => req<void>(`/telegram/campaigns/${id}/start`, { method: 'PUT', body: '{}' }),
+      pause: (id: string) => req<void>(`/telegram/campaigns/${id}/pause`, { method: 'PUT', body: '{}' }),
+      stop:  (id: string) => req<void>(`/telegram/campaigns/${id}/stop`,  { method: 'PUT', body: '{}' }),
     },
     leads: {
       list: (params?: { campaign_id?: string; status?: string; limit?: number; offset?: number }) => {
