@@ -772,10 +772,20 @@ export default function CampaignController({ sessions, selectedPhone, onStatsRef
           </div>
 
           {/* Campaign stats mini row */}
-          <div className="grid grid-cols-3 gap-1.5 text-center">
+          <div className="grid grid-cols-4 gap-1.5 text-center">
             <div className="bg-[#0d1117] rounded py-1.5 px-2">
               <p className="text-green-400 text-sm font-bold">{selected.total_sent}</p>
               <p className="text-[#484f58] text-[10px]">Отправлено</p>
+            </div>
+            <div className="bg-[#0d1117] rounded py-1.5 px-2">
+              <p className="text-blue-400 text-sm font-bold">
+                {Math.max(0, (selected.total_leads || 0) - (selected.total_sent || 0) - (selected.total_errors || 0))}
+              </p>
+              <p className="text-[#484f58] text-[10px]">Осталось</p>
+            </div>
+            <div className="bg-[#0d1117] rounded py-1.5 px-2">
+              <p className="text-red-400 text-sm font-bold">{selected.total_errors}</p>
+              <p className="text-[#484f58] text-[10px]">Ошибки</p>
             </div>
             <div className="bg-[#0d1117] rounded py-1.5 px-2">
               <p className={`text-sm font-bold ${
@@ -785,12 +795,8 @@ export default function CampaignController({ sessions, selectedPhone, onStatsRef
                 {selected.status === 'running' ? '▶' : selected.status === 'paused' ? '⏸' : '⏹'}
               </p>
               <p className="text-[#484f58] text-[10px]">
-                {selected.status === 'running' ? 'Работает' : selected.status === 'paused' ? 'Пауза' : 'Остановлено'}
+                {selected.status === 'running' ? 'Работает' : selected.status === 'paused' ? 'Пауза' : 'Стоп'}
               </p>
-            </div>
-            <div className="bg-[#0d1117] rounded py-1.5 px-2">
-              <p className="text-red-400 text-sm font-bold">{selected.total_errors}</p>
-              <p className="text-[#484f58] text-[10px]">Ошибки</p>
             </div>
           </div>
 
