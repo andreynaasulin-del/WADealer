@@ -131,7 +131,7 @@ export default function AIChat({ campaigns, onClose }: Props) {
             🤖 AI-Ассистент
           </span>
           <span className="text-purple-500 text-[9px] bg-purple-950/30 border border-purple-900/50 rounded px-1.5 py-0.5">
-            GPT-4o-mini
+            GPT-5.2
           </span>
         </div>
         <div className="flex items-center gap-2">

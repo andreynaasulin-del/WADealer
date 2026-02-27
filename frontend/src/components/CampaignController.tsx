@@ -487,7 +487,7 @@ export default function CampaignController({ sessions, selectedPhone, onStatsRef
           <div className="flex flex-col gap-1">
             <div className="flex items-center gap-2">
               <label className="text-[#7d8590] text-[10px] uppercase tracking-wider">ИИ-Детектор</label>
-              <span className="text-purple-500 text-[10px]">GPT-4o</span>
+              <span className="text-purple-500 text-[10px]">GPT-5.2</span>
             </div>
             <textarea
               rows={2}
@@ -684,7 +684,7 @@ export default function CampaignController({ sessions, selectedPhone, onStatsRef
           <div className="flex flex-col gap-1.5">
             <div className="flex items-center gap-2">
               <label className="text-[#7d8590] text-[10px] uppercase tracking-wider">ИИ-Детектор</label>
-              <span className="text-purple-500 text-[10px]">GPT-4o</span>
+              <span className="text-purple-500 text-[10px]">GPT-5.2</span>
             </div>
             <textarea
               rows={2}
