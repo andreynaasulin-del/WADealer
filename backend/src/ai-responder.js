@@ -108,7 +108,7 @@ export async function generateAutoReply(history) {
 
   try {
     const response = await openai.chat.completions.create({
-      model: 'gpt-4o-mini',
+      model: 'gpt-4o',
       messages: chatMessages,
       temperature: 0.7,
       max_tokens: 150,
@@ -150,7 +150,7 @@ export async function extractConversationData(history) {
 
   try {
     const response = await openai.chat.completions.create({
-      model: 'gpt-4o-mini',
+      model: 'gpt-4o',
       messages: [{
         role: 'user',
         content: `Extract structured data from this escort inquiry conversation.
