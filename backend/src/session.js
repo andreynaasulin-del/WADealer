@@ -242,7 +242,7 @@ export class Session extends EventEmitter {
       this.sock.ev.on('contacts.update', (updates) => this._processContacts(updates))
 
       // Track messages → store for CRM + AI classification
-      this.sock.ev.on('messages.upsert', ({ messages, type }) => {
+      this.sock.ev.on('messages.upsert', async ({ messages, type }) => {
         if (type !== 'notify') return
         for (const msg of messages) {
           const rawJid = msg.key.remoteJid || ''
