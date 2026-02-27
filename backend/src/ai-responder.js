@@ -154,6 +154,7 @@ export async function generateAutoReply(history) {
     })
 
     const raw = response.choices[0].message.content?.trim()
+    console.log(`[AI-Debug] Raw response: ${raw?.substring(0, 300)}`)
     if (!raw) return null
 
     let parsed
@@ -172,14 +173,21 @@ export async function generateAutoReply(history) {
 
     // Model decided to stop
     if (!reply || reply === 'NULL' || reply.toUpperCase() === 'NULL' || parsed.should_stop) {
+      console.log(`[AI-Debug] Stopping: reply="${reply}", should_stop=${parsed.should_stop}, stop_reason="${parsed.stop_reason}"`)
       return null
     }
 
     // Safety: if model says 4+ fields collected, stop regardless
-    if (parsed.filled >= 4) return null
+    if (parsed.filled >= 4) {
+      console.log(`[AI-Debug] Stopping: filled=${parsed.filled} >= 4`)
+      return null
+    }
 
     // Safety: if duplicates found, stop
-    if (parsed.duplicates_found) return null
+    if (parsed.duplicates_found) {
+      console.log(`[AI-Debug] Stopping: duplicates_found=true`)
+      return null
+    }
 
     // Safety: reply must not match any of our previous messages
     const replyLower = reply.toLowerCase().trim()
