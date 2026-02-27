@@ -148,23 +148,41 @@ export class MessageQueue {
         if (this._stopSignal) break
       }
 
+      // ── Re-find session after delay (it may have dropped during wait) ──
+      let activeSession = this._findOnlineSession(item.sessionPhone, itemPlatform)
+      if (!activeSession) {
+        // Assigned session went offline — try ANY online session as fallback
+        activeSession = this._findOnlineSession(null, itemPlatform)
+        if (activeSession) {
+          this.orchestrator.log(item.sessionPhone, `Сессия офлайн — fallback на ${activeSession.phone || activeSession.id}`, 'warn', itemPlatform)
+        }
+      }
+      if (!activeSession) {
+        // No sessions online — DON'T remove from queue, wait and retry
+        this.orchestrator.log(item.sessionPhone, `Все сессии офлайн — повтор через 30с`, 'warn', itemPlatform)
+        await this._sleepWithCheck(30_000)
+        if (this._stopSignal) break
+        continue
+      }
+
       // Remove from queue before attempting send
       this.items.shift()
 
       // Daily limit check
-      if (itemPlatform === 'whatsapp' && !this.orchestrator.canSend(item.sessionPhone)) {
-        this.orchestrator.log(item.sessionPhone, `⚠ Дневной лимит ${this.orchestrator.DAILY_LIMIT} сообщений — пропускаю ${item.phone}`, 'warn', itemPlatform)
+      const sendSessionPhone = activeSession.phone || item.sessionPhone
+      if (itemPlatform === 'whatsapp' && !this.orchestrator.canSend(sendSessionPhone)) {
+        this.orchestrator.log(sendSessionPhone, `⚠ Дневной лимит ${this.orchestrator.DAILY_LIMIT} сообщений — пропускаю ${item.phone}`, 'warn', itemPlatform)
         continue
       }
 
       try {
         const text = parseSpintax(item.template)
-        const result = await session.sendMessage(item.phone, text)
+        const result = await activeSession.sendMessage(item.phone, text)
 
         // Store outbound message for CRM (WhatsApp only)
         if (itemPlatform === 'whatsapp') {
           this.orchestrator.storeMessage(
-            item.sessionPhone, item.phone, 'outbound', text,
+            sendSessionPhone, item.phone, 'outbound', text,
             result?.key?.id, item.id,
           )
         }
@@ -184,18 +202,35 @@ export class MessageQueue {
 
         // Track daily limit
         if (itemPlatform === 'whatsapp') {
-          this.orchestrator._incrementDailyCount(item.sessionPhone)
+          this.orchestrator._incrementDailyCount(sendSessionPhone)
         }
 
         this.orchestrator.broadcast({ type: 'stats_update', sentDelta: 1, inQueueDelta: -1, platform: itemPlatform })
-        const dailyLeft = this.orchestrator.DAILY_LIMIT - this.orchestrator._getDailyCount(item.sessionPhone)
+        const dailyLeft = this.orchestrator.DAILY_LIMIT - this.orchestrator._getDailyCount(sendSessionPhone)
         this.orchestrator.log(
-          item.sessionPhone,
+          sendSessionPhone,
           `✓ Отправлено на ${item.phone} (очередь: ${this.items.length}) [${dailyLeft}/${this.orchestrator.DAILY_LIMIT} осталось]`,
           'info',
           itemPlatform
         )
       } catch (err) {
+        // ── Connection error → re-queue instead of marking as failed ──
+        const isConnectionError = err.message?.includes('не в сети')
+          || err.message?.includes('Connection')
+          || err.message?.includes('timed out')
+          || err.message?.includes('closed')
+        if (isConnectionError && !this._stopSignal) {
+          this.items.unshift(item)  // put back at front of queue
+          this.orchestrator.log(
+            sendSessionPhone,
+            `⚠ Коннект-ошибка на ${item.phone}: ${err.message} — re-queue (ожидание 30с)`,
+            'warn', itemPlatform
+          )
+          await this._sleepWithCheck(30_000)
+          continue
+        }
+
+        // Permanent error → mark as failed
         if (itemPlatform === 'telegram') {
           await Promise.allSettled([
             dbMarkTelegramLeadFailed(item.id, err.message),
@@ -210,7 +245,7 @@ export class MessageQueue {
 
         this.orchestrator.broadcast({ type: 'stats_update', errorsDelta: 1, inQueueDelta: -1, platform: itemPlatform })
         this.orchestrator.log(
-          item.sessionPhone,
+          sendSessionPhone,
           `✗ Ошибка отправки на ${item.phone}: ${err.message}`,
           'error',
           itemPlatform
