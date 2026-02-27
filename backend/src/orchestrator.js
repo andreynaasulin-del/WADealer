@@ -235,14 +235,26 @@ export class Orchestrator {
         const session = new Session(s.phone_number, s.proxy_string, this)
         session.id = s.id
         this.sessions.set(s.phone_number, session)
-        if (s.status === 'online') {
+
+        // ── Auto-start logic ──────────────────────────────────────────────
+        // Start if:
+        //   a) DB says 'online' (was connected before restart), OR
+        //   b) Has saved credentials on disk (creds.json exists → can connect without QR)
+        // This fixes the bug where network drop → status='offline' in DB → PM2 restarts → session lost
+        const sessionDir = db.getSessionDir ? db.getSessionDir(s.phone_number) : null
+        const fs = (await import('fs')).default
+        const path = (await import('path')).default
+        const credsDir = path.resolve(process.env.SESSIONS_DIR || './sessions', s.phone_number.replace(/\+/g, ''))
+        const hasCreds = fs.existsSync(path.join(credsDir, 'creds.json'))
+
+        if (s.status === 'online' || hasCreds) {
           session.start()
           autoConnected++
         } else {
           offline++
         }
       }
-      this.log(null, `Загружено ${autoConnected + offline} WA-сессий (${autoConnected} переподключаются, ${offline} ожидают Подключить)`, 'system')
+      this.log(null, `Загружено ${autoConnected + offline} WA-сессий (${autoConnected} подключаются, ${offline} ожидают QR-кода)`, 'system')
     } catch (err) {
       this.log(null, `Ошибка восстановления WA: ${err.message}`, 'error')
     }

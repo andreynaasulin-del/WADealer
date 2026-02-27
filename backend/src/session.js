@@ -192,7 +192,9 @@ export class Session extends EventEmitter {
 
           } else {
             // Всё остальное (timeout, network drop, packet loss и т.д.) — авто-реконнект
-            await this.orchestrator.db.dbUpdateSessionStatus(this.phone, 'offline')
+            // NOTE: НЕ пишем 'offline' в БД — оставляем 'online', чтобы при рестарте PM2
+            // restoreFromDB() мог автоматически переподключить сессию.
+            // Статус в памяти ставим 'initializing' через _scheduleReconnect.
             this._scheduleReconnect(reason, code)
           }
         }
