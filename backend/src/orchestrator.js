@@ -53,6 +53,9 @@ export class Orchestrator {
 
     /** Timestamp of last outbound AI message per phone — cooldown tracking */
     this._lastAiReplyTime = new Map()
+
+    /** Phones where AI decided conversation is complete — don't retry */
+    this._aiConversationDone = new Set()
   }
 
   // ─── Per-session WhatsApp queues ───────────────────────────────────────────
@@ -260,6 +263,10 @@ export class Orchestrator {
     let lead = null
     let resolvedPhone = fromPhone
 
+    // New inbound message → reset "conversation done" flag so AI can respond to new messages
+    const inboundKey = fromPhone.replace(/\D/g, '')
+    this._aiConversationDone.delete(inboundKey)
+
     try {
       // ── LID Resolution ──────────────────────────────────────────────────
       // WhatsApp Linked Devices use internal LID numbers (e.g. 197882716151908)
@@ -384,7 +391,8 @@ export class Orchestrator {
       // Generate next question
       const nextMsg = await generateAutoReply(messages)
       if (!nextMsg) {
-        // AI says conversation is done — extract final data
+        // AI says conversation is done — mark as completed so retry doesn't keep firing
+        this._aiConversationDone.add(phoneKey)
         this.log(sessionPhone, `🤖 AI: ${remotePhone} — разговор завершён, извлекаю данные...`)
         const extracted = await extractConversationData(messages)
         if (extracted && lead.id) {
@@ -519,6 +527,9 @@ export class Orchestrator {
       for (const lead of leads) {
         try {
           const phone = lead.phone.replace(/\D/g, '')
+
+          // Skip if AI already decided this conversation is complete
+          if (this._aiConversationDone.has(phone)) continue
 
           // Skip if reply already in progress for this phone
           if (this._replyInProgress.has(phone)) continue
