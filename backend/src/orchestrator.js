@@ -2,6 +2,7 @@ import { Session } from './session.js'
 import { TelegramSession } from './telegram-session.js'
 import { MessageQueue } from './queue.js'
 import { classifyLead } from './ai-classifier.js'
+import { generateAutoReply, extractConversationData } from './ai-responder.js'
 import * as db from './db.js'
 
 /**
@@ -180,14 +181,21 @@ export class Orchestrator {
 
   async handleReply(fromPhone, text, sessionPhone) {
     let leadId = null
+    let lead = null
     try {
-      const { data } = await db.dbGetLeads({ status: 'sent' })
-      const lead = data?.find(l => l.phone.replace(/\D/g, '') === fromPhone.replace(/\D/g, ''))
+      // Search both 'sent' and 'replied' leads — so AI auto-reply works
+      // for the entire conversation, not just the first reply
+      lead = await db.dbFindLeadByPhone(fromPhone)
       if (lead) {
         leadId = lead.id
-        await db.dbMarkLeadReplied(lead.id)
-        // Trigger AI classification if reply has text
-        if (text) this._classifyLead(lead, text, sessionPhone)
+        // Mark as replied only if currently 'sent' (first reply)
+        if (lead.status === 'sent') {
+          await db.dbMarkLeadReplied(lead.id)
+        }
+        // Trigger AI classification on first reply
+        if (text && lead.status === 'sent') {
+          this._classifyLead(lead, text, sessionPhone)
+        }
       }
     } catch (_) {}
 
@@ -196,6 +204,94 @@ export class Orchestrator {
       await this.storeMessage(sessionPhone, fromPhone, 'inbound', text, null, leadId)
     }
     this.broadcast({ type: 'reply_received', phone: fromPhone })
+
+    // ── AI auto-reply: continue the conversation ──────────────────────────
+    if (lead && text) {
+      this._autoReply(fromPhone, sessionPhone, lead).catch(err => {
+        this.log(sessionPhone, `AI авто-ответ ошибка: ${err.message}`, 'error')
+      })
+    }
+  }
+
+  /**
+   * AI auto-reply — generates and sends a follow-up question.
+   * Only fires if the campaign is running or paused (not stopped).
+   */
+  async _autoReply(remotePhone, sessionPhone, lead) {
+    try {
+      // Check campaign status — only auto-reply if campaign is active
+      const campaigns = await db.dbGetAllCampaigns()
+      const campaign = campaigns.find(c => c.id === lead.campaign_id)
+      if (!campaign) return
+      if (campaign.status === 'stopped') return  // respect stop
+
+      // Get full conversation history
+      const messages = await db.dbGetConversationMessages(remotePhone, 100)
+      if (!messages || messages.length < 2) return  // need at least our msg + their reply
+
+      // Generate next question
+      const nextMsg = await generateAutoReply(messages)
+      if (!nextMsg) {
+        // AI says conversation is done — extract final data
+        this.log(sessionPhone, `🤖 AI: ${remotePhone} — разговор завершён, извлекаю данные...`)
+        const extracted = await extractConversationData(messages)
+        if (extracted && lead.id) {
+          await db.dbUpdateLeadAI(lead.id, {
+            ai_score: extracted.sentiment === 'positive' ? 'hot' : 'warm',
+            ai_reason: JSON.stringify(extracted),
+          })
+          this.log(sessionPhone, `📊 Данные: ${JSON.stringify(extracted).substring(0, 120)}...`)
+          this.broadcast({
+            type: 'ai_data_extracted',
+            leadId: lead.id, phone: lead.phone,
+            data: extracted,
+          })
+        }
+        return
+      }
+
+      // Human-like delay before responding (8–25 seconds — reading + thinking)
+      const readDelay = 8_000 + Math.floor(Math.random() * 17_000)
+      this.log(sessionPhone, `🤖 AI → ${remotePhone}: жду ${(readDelay / 1000).toFixed(0)}с перед ответом...`)
+      await new Promise(r => setTimeout(r, readDelay))
+
+      // Find the session and send
+      const session = this.sessions.get(sessionPhone)
+      if (!session || session.status !== 'online') {
+        this.log(sessionPhone, `🤖 AI: сессия офлайн, ответ не отправлен`, 'warn')
+        return
+      }
+
+      await session.sendMessage(remotePhone, nextMsg)
+      await this.storeMessage(sessionPhone, remotePhone, 'outbound', nextMsg, null, lead.id)
+
+      this.log(sessionPhone, `🤖 AI → ${remotePhone}: "${nextMsg.substring(0, 60)}${nextMsg.length > 60 ? '...' : ''}"`)
+      this.broadcast({
+        type: 'ai_auto_reply',
+        sessionPhone, remotePhone,
+        message: nextMsg,
+      })
+
+      // After every 3rd auto-reply, extract partial data
+      const ourFollowups = messages.filter(m => m.direction === 'outbound').length
+      if (ourFollowups >= 3 && ourFollowups % 2 === 0) {
+        const allMsgs = await db.dbGetConversationMessages(remotePhone, 100)
+        const extracted = await extractConversationData(allMsgs)
+        if (extracted && lead.id) {
+          await db.dbUpdateLeadAI(lead.id, {
+            ai_score: extracted.sentiment === 'positive' ? 'hot' : (extracted.sentiment === 'neutral' ? 'warm' : 'cold'),
+            ai_reason: JSON.stringify(extracted),
+          })
+          this.broadcast({
+            type: 'ai_data_extracted',
+            leadId: lead.id, phone: lead.phone,
+            data: extracted,
+          })
+        }
+      }
+    } catch (err) {
+      this.log(sessionPhone, `🤖 AI ошибка: ${err.message}`, 'error')
+    }
   }
 
   async _classifyLead(lead, inboundText, sessionPhone) {

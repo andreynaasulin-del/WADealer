@@ -771,6 +771,32 @@ export default function CampaignController({ sessions, selectedPhone, onStatsRef
             </button>
           </div>
 
+          {/* AI Auto-reply status */}
+          <div className={`flex items-center justify-between px-3 py-2 rounded-lg border ${
+            selected.status !== 'stopped'
+              ? 'bg-purple-950/20 border-purple-800/50'
+              : 'bg-[#0d1117] border-[#30363d]'
+          }`}>
+            <div className="flex items-center gap-2">
+              <span className="text-sm">🤖</span>
+              <div>
+                <p className="text-[11px] font-bold text-purple-300">AI Авто-ответ</p>
+                <p className="text-[9px] text-[#7d8590]">
+                  {selected.status !== 'stopped'
+                    ? 'Отвечает на входящие, собирает данные'
+                    : 'Неактивен — запусти кампанию'}
+                </p>
+              </div>
+            </div>
+            <span className={`text-[10px] font-bold px-2 py-0.5 rounded ${
+              selected.status !== 'stopped'
+                ? 'bg-purple-900/50 text-purple-300'
+                : 'bg-[#21262d] text-[#484f58]'
+            }`}>
+              {selected.status !== 'stopped' ? 'ON' : 'OFF'}
+            </span>
+          </div>
+
           {/* Campaign stats mini row */}
           <div className="grid grid-cols-4 gap-1.5 text-center">
             <div className="bg-[#0d1117] rounded py-1.5 px-2">

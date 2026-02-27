@@ -165,6 +165,22 @@ export async function dbMarkLeadReplied(id) {
 }
 
 /**
+ * Find a lead by phone number in 'sent' or 'replied' status.
+ * Used by auto-reply to find the lead even after first reply was received.
+ */
+export async function dbFindLeadByPhone(phone) {
+  const normalized = phone.replace(/\D/g, '')
+  const { data, error } = await supabase
+    .from('leads_for_invite')
+    .select('*')
+    .in('status', ['sent', 'replied'])
+    .order('updated_at', { ascending: false })
+    .limit(100)
+  if (error) throw error
+  return (data || []).find(l => l.phone.replace(/\D/g, '') === normalized) || null
+}
+
+/**
  * Import leads from Tahles contacts table into leads_for_invite.
  * Pulls all advertisements that have a WhatsApp or phone number.
  * Skips numbers already in leads_for_invite for this campaign.
