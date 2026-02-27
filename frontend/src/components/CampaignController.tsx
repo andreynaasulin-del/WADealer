@@ -246,6 +246,10 @@ export default function CampaignController({ sessions, selectedPhone, onStatsRef
   }
 
   // ── Calculate campaign progress ────────────────────────────────────────────
+  const DAILY_LIMIT_PER_SESSION = 30
+  const onlineSessions = sessions.filter(s => s.status === 'online').length || 1
+  const dailyTotal = DAILY_LIMIT_PER_SESSION * onlineSessions
+
   const progress = selected ? {
     total: selected.total_leads || 0,
     sent: selected.total_sent || 0,
@@ -254,10 +258,8 @@ export default function CampaignController({ sessions, selectedPhone, onStatsRef
     pct: selected.total_leads > 0
       ? Math.min(100, Math.round(((selected.total_sent + selected.total_errors) / selected.total_leads) * 100))
       : 0,
-    avgDelay: (selected.delay_min_sec + selected.delay_max_sec) / 2,
-    get speedPerHour() { return this.avgDelay > 0 ? Math.round(3600 / this.avgDelay) : 0 },
     get remaining() { return Math.max(0, this.total - this.processed) },
-    get etaSeconds() { return this.remaining * this.avgDelay },
+    get etaDays() { return dailyTotal > 0 ? Math.ceil(this.remaining / dailyTotal) : 0 },
   } : null
 
   // Hidden file input
@@ -547,10 +549,10 @@ export default function CampaignController({ sessions, selectedPhone, onStatsRef
               )}
             </div>
             <div className="flex items-center gap-3">
-              <span className="text-[#7d8590]">~{progress.speedPerHour} сообщ/ч</span>
+              <span className="text-[#7d8590]">{dailyTotal}/день</span>
               {progress.remaining > 0 && selected.status === 'running' && (
                 <span className="text-[#7d8590]">
-                  ETA: <span className="text-zinc-400 font-bold">{formatETA(progress.etaSeconds)}</span>
+                  ETA: <span className="text-zinc-400 font-bold">~{progress.etaDays}д</span>
                 </span>
               )}
             </div>
@@ -632,6 +634,50 @@ export default function CampaignController({ sessions, selectedPhone, onStatsRef
             {addedCount !== null && (
               <span className="text-green-400 text-[10px] font-bold mt-1">+{addedCount} добавлено</span>
             )}
+          </div>
+
+          {/* ── Delay settings for existing campaign ── */}
+          <div className="flex flex-col gap-1.5 bg-[#0d1117] border border-[#30363d] rounded-lg p-2.5">
+            <p className="text-[#7d8590] text-[10px] uppercase tracking-wider font-bold">
+              ⏱ Задержка между сообщениями
+            </p>
+            <div className="flex gap-2 items-end">
+              <div className="flex-1">
+                <label className="text-[#484f58] text-[9px]">Мин (мин)</label>
+                <input
+                  type="number" min={1} max={60}
+                  className="w-full bg-[#161b22] border border-[#30363d] rounded px-2 py-1 text-xs
+                             text-[#e6edf3] focus:outline-none focus:border-green-500 transition-colors"
+                  value={Math.round(selected.delay_min_sec / 60)}
+                  onChange={async e => {
+                    const minSec = Math.max(60, Number(e.target.value) * 60)
+                    try {
+                      await api.campaigns.update(selected.id, { delay_min_sec: minSec })
+                      loadCampaigns()
+                    } catch (_) {}
+                  }}
+                />
+              </div>
+              <div className="flex-1">
+                <label className="text-[#484f58] text-[9px]">Макс (мин)</label>
+                <input
+                  type="number" min={1} max={120}
+                  className="w-full bg-[#161b22] border border-[#30363d] rounded px-2 py-1 text-xs
+                             text-[#e6edf3] focus:outline-none focus:border-green-500 transition-colors"
+                  value={Math.round(selected.delay_max_sec / 60)}
+                  onChange={async e => {
+                    const maxSec = Math.max(60, Number(e.target.value) * 60)
+                    try {
+                      await api.campaigns.update(selected.id, { delay_max_sec: maxSec })
+                      loadCampaigns()
+                    } catch (_) {}
+                  }}
+                />
+              </div>
+              <span className="text-[9px] text-[#484f58] pb-1 whitespace-nowrap">
+                Лимит: {DAILY_LIMIT_PER_SESSION}/аккаунт/день
+              </span>
+            </div>
           </div>
 
           {/* AI criteria — edit for existing campaign */}
