@@ -22,8 +22,8 @@ export class Orchestrator {
     /** @type {Map<string, TelegramSession>} accountId → TelegramSession */
     this.telegramAccounts = new Map()
 
-    /** @type {MessageQueue} WhatsApp queue */
-    this.queue = new MessageQueue(this)
+    /** @type {Map<string, MessageQueue>} sessionPhone → WhatsApp queue (parallel per session) */
+    this.waQueues = new Map()
 
     /** @type {MessageQueue} Telegram queue (separate instance) */
     this.telegramQueue = new MessageQueue(this, 'telegram')
@@ -44,6 +44,39 @@ export class Orchestrator {
 
     /** Global LID → Phone map (WhatsApp Linked Devices resolution) */
     this._lidMap = new Map()
+  }
+
+  // ─── Per-session WhatsApp queues ───────────────────────────────────────────
+
+  /** Aggregated queue status across all WA queues */
+  get waQueueStatus() {
+    for (const q of this.waQueues.values()) {
+      if (q.status === 'running') return 'running'
+    }
+    for (const q of this.waQueues.values()) {
+      if (q.status === 'paused') return 'paused'
+    }
+    return 'stopped'
+  }
+
+  /** Aggregated queue size across all WA queues */
+  get waQueueSize() {
+    let total = 0
+    for (const q of this.waQueues.values()) total += q.size
+    return total
+  }
+
+  /** Backward-compat getter for .queue property (routes use orchestrator.queue.status/size) */
+  get queue() {
+    return { status: this.waQueueStatus, size: this.waQueueSize }
+  }
+
+  /** Get or create a per-session queue */
+  _getOrCreateWaQueue(sessionPhone) {
+    if (!this.waQueues.has(sessionPhone)) {
+      this.waQueues.set(sessionPhone, new MessageQueue(this))
+    }
+    return this.waQueues.get(sessionPhone)
   }
 
   // ─── Daily send limit ──────────────────────────────────────────────────────
@@ -518,17 +551,11 @@ export class Orchestrator {
         this.sessions.set(s.phone_number, session)
 
         // ── Auto-start logic ──────────────────────────────────────────────
-        // Start if:
-        //   a) DB says 'online' (was connected before restart), OR
-        //   b) Has saved credentials on disk (creds.json exists → can connect without QR)
-        // This fixes the bug where network drop → status='offline' in DB → PM2 restarts → session lost
-        const sessionDir = db.getSessionDir ? db.getSessionDir(s.phone_number) : null
-        const fs = (await import('fs')).default
-        const path = (await import('path')).default
-        const credsDir = path.resolve(process.env.SESSIONS_DIR || './sessions', s.phone_number.replace(/\+/g, ''))
-        const hasCreds = fs.existsSync(path.join(credsDir, 'creds.json'))
-
-        if (s.status === 'online' || hasCreds) {
+        // Only auto-reconnect sessions that were ONLINE in DB (user had them connected).
+        // Sessions that were offline/disconnected stay offline until user clicks Connect.
+        // NOTE: temporary disconnects (428, timeout) do NOT write 'offline' to DB,
+        // so sessions that dropped due to network issues will auto-reconnect correctly.
+        if (s.status === 'online') {
           // ── Стаггеринг: запускаем сессии с интервалом 15-30с друг от друга ──
           // Чтобы WhatsApp не видел 3-4 одновременных подключения → меньше банов
           const staggerDelay = autoConnected * (15_000 + Math.floor(Math.random() * 15_000))
@@ -589,20 +616,22 @@ export class Orchestrator {
           continue
         }
 
-        // Round-robin into queue
+        // Round-robin into per-session queues (parallel sending)
         for (let i = 0; i < leads.length; i++) {
           const lead = leads[i]
           const sessionPhone = onlineSessions[i % onlineSessions.length]
-          this.queue.add({
+          const queue = this._getOrCreateWaQueue(sessionPhone)
+          queue.add({
             id: lead.id, phone: lead.phone, campaignId: campaign.id,
             template: campaign.template_text, sessionPhone,
             delayMinSec: campaign.delay_min_sec, delayMaxSec: campaign.delay_max_sec,
           })
         }
 
-        this.queue.start()
+        // Start all session queues in parallel
+        for (const q of this.waQueues.values()) q.start()
         const perSession = Math.ceil(leads.length / onlineSessions.length)
-        this.log(null, `♻ Кампания "${campaign.name}" возобновлена — ${leads.length} лидов на ${onlineSessions.length} сессий (~${perSession}/сессию)`)
+        this.log(null, `♻ Кампания "${campaign.name}" возобновлена — ${leads.length} лидов на ${onlineSessions.length} сессий (~${perSession}/сессию) [ПАРАЛЛЕЛЬНО]`)
       }
     } catch (err) {
       this.log(null, `Ошибка возобновления кампаний: ${err.message}`, 'error')
@@ -632,11 +661,12 @@ export class Orchestrator {
     }
     if (onlineSessions.length === 0) throw new Error('Нет онлайн-сессий для запуска кампании')
 
-    // Distribute leads across sessions in round-robin fashion
+    // Distribute leads across per-session queues (parallel sending)
     for (let i = 0; i < leads.length; i++) {
       const lead = leads[i]
       const sessionPhone = onlineSessions[i % onlineSessions.length]
-      this.queue.add({
+      const queue = this._getOrCreateWaQueue(sessionPhone)
+      queue.add({
         id: lead.id, phone: lead.phone, campaignId,
         template: campaign.template_text, sessionPhone,
         delayMinSec: campaign.delay_min_sec, delayMaxSec: campaign.delay_max_sec,
@@ -644,23 +674,26 @@ export class Orchestrator {
     }
 
     await db.dbUpdateCampaign(campaignId, { status: 'running' })
-    this.queue.start()
+    // Start all session queues in parallel
+    for (const q of this.waQueues.values()) q.start()
 
     const perSession = Math.ceil(leads.length / onlineSessions.length)
-    this.log(null, `Кампания "${campaign.name}" запущена — ${leads.length} лидов на ${onlineSessions.length} сессий (~${perSession}/сессию)`)
+    this.log(null, `🚀 Кампания "${campaign.name}" запущена — ${leads.length} лидов на ${onlineSessions.length} сессий (~${perSession}/сессию) [ПАРАЛЛЕЛЬНО]`)
     this.broadcast({ type: 'campaign_update', campaignId, status: 'running' })
   }
 
   async pauseCampaign(campaignId) {
     await db.dbUpdateCampaign(campaignId, { status: 'paused' })
-    this.queue.pause()
+    for (const q of this.waQueues.values()) q.pause()
     this.broadcast({ type: 'campaign_update', campaignId, status: 'paused' })
   }
 
   async stopCampaign(campaignId) {
     await db.dbUpdateCampaign(campaignId, { status: 'stopped' })
-    this.queue.stop()
-    this.queue.clear()
+    for (const q of this.waQueues.values()) {
+      q.stop()
+      q.clear()
+    }
     this.broadcast({ type: 'campaign_update', campaignId, status: 'stopped' })
   }
 
