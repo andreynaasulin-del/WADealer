@@ -20,6 +20,24 @@ function formatETA(seconds: number): string {
   return `~${hours}ч ${remMins}м`
 }
 
+/** Convert lines of text → Spintax {line1|line2|line3} */
+function linesToSpintax(text: string): string {
+  const lines = text.split('\n').map(l => l.trim()).filter(l => l.length > 0)
+  if (lines.length === 0) return ''
+  if (lines.length === 1) return lines[0]
+  return `{${lines.join('|')}}`
+}
+
+/** Detect if template is a simple {a|b|c} pattern and convert to lines */
+function spintaxToLines(tpl: string): string | null {
+  const trimmed = tpl.trim()
+  // Match: starts with {, ends with }, no nested { or }
+  if (/^\{[^{}]+\}$/.test(trimmed)) {
+    return trimmed.slice(1, -1).split('|').map(s => s.trim()).join('\n')
+  }
+  return null  // complex Spintax — can't simplify
+}
+
 function parsePhonesFromText(content: string): string[] {
   return content
     .split(/[\n\r,;\t]+/)
@@ -44,6 +62,9 @@ export default function CampaignController({ sessions, selectedPhone, onStatsRef
   const [addedCount, setAddedCount]     = useState<number | null>(null)
   const [aiCriteria, setAiCriteria]     = useState('')
   const [showCreate, setShowCreate]     = useState(false)
+  const [simpleMode, setSimpleMode]     = useState(true)  // true = simple text (line per message), false = Spintax
+  const [simpleText, setSimpleText]     = useState('')     // lines of messages for simple mode
+  const [showTemplate, setShowTemplate] = useState(true)   // collapsible template section
   const [aiStats, setAiStats]           = useState<{ hot: number; warm: number; cold: number; irrelevant: number; unscored: number }>({ hot: 0, warm: 0, cold: 0, irrelevant: 0, unscored: 0 })
 
   // File import state
@@ -70,6 +91,15 @@ export default function CampaignController({ sessions, selectedPhone, onStatsRef
       setSelected(c)
       setTemplate(c.template_text)
       setAiCriteria(c.ai_criteria || '')
+      // Detect simple mode from template
+      const lines = spintaxToLines(c.template_text)
+      if (lines !== null) {
+        setSimpleMode(true)
+        setSimpleText(lines)
+      } else {
+        setSimpleMode(false)
+        setSimpleText('')
+      }
     }
   }, [campaigns, selectedPhone]) // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -279,6 +309,9 @@ export default function CampaignController({ sessions, selectedPhone, onStatsRef
                   setTemplate(c.template_text)
                   setAiCriteria(c.ai_criteria || '')
                   setShowCreate(false)
+                  const lines = spintaxToLines(c.template_text)
+                  if (lines !== null) { setSimpleMode(true); setSimpleText(lines) }
+                  else { setSimpleMode(false); setSimpleText('') }
                 }}
                 className={`flex items-center gap-2.5 px-3 py-2 rounded-lg border transition-all cursor-pointer text-left w-full ${
                   isActive
@@ -386,25 +419,61 @@ export default function CampaignController({ sessions, selectedPhone, onStatsRef
             </div>
           </div>
 
-          {/* Template editor */}
+          {/* Message editor — simple/spintax toggle */}
           <div className="flex flex-col gap-1">
             <div className="flex items-center justify-between">
-              <label className="text-[#7d8590] text-[10px] uppercase tracking-wider">Шаблон (Spintax)</label>
-              <span className="text-[#484f58] text-[10px]">{template.length} символов</span>
+              <label className="text-[#7d8590] text-[10px] uppercase tracking-wider">Сообщения</label>
+              <div className="flex items-center bg-[#0d1117] border border-[#30363d] rounded overflow-hidden">
+                <button
+                  onClick={() => { setSimpleMode(true); if (template) { const l = spintaxToLines(template); if (l) setSimpleText(l) } }}
+                  className={`text-[9px] px-2 py-0.5 cursor-pointer transition-colors ${simpleMode ? 'bg-green-900/40 text-green-400' : 'text-[#7d8590]'}`}
+                >
+                  Простой
+                </button>
+                <button
+                  onClick={() => { setSimpleMode(false); if (simpleText) setTemplate(linesToSpintax(simpleText)) }}
+                  className={`text-[9px] px-2 py-0.5 cursor-pointer transition-colors border-l border-[#30363d] ${!simpleMode ? 'bg-blue-900/40 text-blue-400' : 'text-[#7d8590]'}`}
+                >
+                  Spintax
+                </button>
+              </div>
             </div>
-            <textarea
-              rows={3}
-              className="bg-[#161b22] border border-[#30363d] rounded px-2.5 py-2 text-xs text-[#e6edf3]
-                         placeholder-zinc-600 focus:outline-none focus:border-green-500 transition-colors
-                         resize-none leading-relaxed"
-              placeholder={`{Привет|Здравствуйте|Добрый день}! Увидел ваш профиль...\nЭксклюзивное размещение доступно.`}
-              value={template}
-              onChange={e => setTemplate(e.target.value)}
-            />
-            {preview && (
-              <p className="text-[10px] text-[#7d8590] truncate">
-                <span className="text-[#484f58]">Превью: </span>{preview}
-              </p>
+
+            {simpleMode ? (
+              <>
+                <textarea
+                  rows={4}
+                  className="bg-[#161b22] border border-[#30363d] rounded px-2.5 py-2 text-xs text-[#e6edf3]
+                             placeholder-zinc-600 focus:outline-none focus:border-green-500 transition-colors
+                             resize-none leading-relaxed"
+                  placeholder={"Hi I would like to come please\nCan I have details please?\nHello, where are you from?"}
+                  value={simpleText}
+                  onChange={e => { setSimpleText(e.target.value); setTemplate(linesToSpintax(e.target.value)) }}
+                />
+                <p className="text-[9px] text-[#484f58]">
+                  Каждая строка = отдельный вариант. Рандомно выбирается для каждого лида.
+                  {simpleText.split('\n').filter(l => l.trim()).length > 0 && (
+                    <span className="text-green-500"> ({simpleText.split('\n').filter(l => l.trim()).length} вариантов)</span>
+                  )}
+                </p>
+              </>
+            ) : (
+              <>
+                <textarea
+                  rows={3}
+                  className="bg-[#161b22] border border-[#30363d] rounded px-2.5 py-2 text-xs text-[#e6edf3]
+                             placeholder-zinc-600 focus:outline-none focus:border-green-500 transition-colors
+                             resize-none leading-relaxed"
+                  placeholder={`{Привет|Здравствуйте|Добрый день}! Увидел ваш профиль...`}
+                  value={template}
+                  onChange={e => setTemplate(e.target.value)}
+                />
+                {preview && (
+                  <p className="text-[10px] text-[#7d8590] truncate">
+                    <span className="text-[#484f58]">Превью: </span>{preview}
+                  </p>
+                )}
+              </>
             )}
           </div>
 
@@ -587,39 +656,87 @@ export default function CampaignController({ sessions, selectedPhone, onStatsRef
             )}
           </div>
 
-          {/* Template editor — for editing selected campaign */}
+          {/* Message editor — simple/spintax toggle (for editing) */}
           <div className="flex flex-col gap-1.5">
             <div className="flex items-center justify-between">
-              <label className="text-[#7d8590] text-[10px] uppercase tracking-wider">Шаблон (Spintax)</label>
-              <span className="text-[#484f58] text-[10px]">{template.length} символов</span>
-            </div>
-            <textarea
-              rows={3}
-              className="bg-[#0d1117] border border-[#30363d] rounded px-2.5 py-2 text-xs text-[#e6edf3]
-                         placeholder-zinc-600 focus:outline-none focus:border-green-500 transition-colors
-                         resize-none leading-relaxed"
-              placeholder={`{Привет|Здравствуйте|Добрый день}! Увидел ваш профиль...`}
-              value={template}
-              onChange={e => setTemplate(e.target.value)}
-            />
-            {preview && (
-              <p className="text-[10px] text-[#7d8590] truncate">
-                <span className="text-[#484f58]">Превью: </span>{preview}
-              </p>
-            )}
-            {selected && template !== selected.template_text && (
               <button
-                onClick={async () => {
-                  try {
-                    await api.campaigns.update(selected.id, { template_text: template })
-                    loadCampaigns()
-                  } catch (_) {}
-                }}
-                className="self-start text-[10px] text-green-400 hover:text-green-300 cursor-pointer
-                           bg-green-950/30 border border-green-900/50 rounded px-2 py-0.5"
+                onClick={() => setShowTemplate(!showTemplate)}
+                className="text-[#7d8590] text-[10px] uppercase tracking-wider hover:text-[#e6edf3] cursor-pointer flex items-center gap-1"
               >
-                Сохранить шаблон
+                <span className="text-[8px]">{showTemplate ? '▼' : '▶'}</span> Сообщения
               </button>
+              {showTemplate && (
+                <div className="flex items-center bg-[#0d1117] border border-[#30363d] rounded overflow-hidden">
+                  <button
+                    onClick={() => { setSimpleMode(true); const l = spintaxToLines(template); if (l) setSimpleText(l) }}
+                    className={`text-[9px] px-2 py-0.5 cursor-pointer transition-colors ${simpleMode ? 'bg-green-900/40 text-green-400' : 'text-[#7d8590]'}`}
+                  >
+                    Простой
+                  </button>
+                  <button
+                    onClick={() => { setSimpleMode(false); if (simpleText) setTemplate(linesToSpintax(simpleText)) }}
+                    className={`text-[9px] px-2 py-0.5 cursor-pointer transition-colors border-l border-[#30363d] ${!simpleMode ? 'bg-blue-900/40 text-blue-400' : 'text-[#7d8590]'}`}
+                  >
+                    Spintax
+                  </button>
+                </div>
+              )}
+            </div>
+
+            {showTemplate && (
+              <>
+                {simpleMode ? (
+                  <>
+                    <textarea
+                      rows={4}
+                      className="bg-[#0d1117] border border-[#30363d] rounded px-2.5 py-2 text-xs text-[#e6edf3]
+                                 placeholder-zinc-600 focus:outline-none focus:border-green-500 transition-colors
+                                 resize-none leading-relaxed"
+                      placeholder={"Hi I would like to come please\nCan I have details please?\nHello, where are you from?"}
+                      value={simpleText}
+                      onChange={e => { setSimpleText(e.target.value); setTemplate(linesToSpintax(e.target.value)) }}
+                    />
+                    <p className="text-[9px] text-[#484f58]">
+                      Каждая строка = отдельный вариант сообщения.
+                      {simpleText.split('\n').filter(l => l.trim()).length > 0 && (
+                        <span className="text-green-500"> ({simpleText.split('\n').filter(l => l.trim()).length} вариантов)</span>
+                      )}
+                    </p>
+                  </>
+                ) : (
+                  <>
+                    <textarea
+                      rows={3}
+                      className="bg-[#0d1117] border border-[#30363d] rounded px-2.5 py-2 text-xs text-[#e6edf3]
+                                 placeholder-zinc-600 focus:outline-none focus:border-green-500 transition-colors
+                                 resize-none leading-relaxed"
+                      placeholder={`{Привет|Здравствуйте|Добрый день}! Увидел ваш профиль...`}
+                      value={template}
+                      onChange={e => setTemplate(e.target.value)}
+                    />
+                    {preview && (
+                      <p className="text-[10px] text-[#7d8590] truncate">
+                        <span className="text-[#484f58]">Превью: </span>{preview}
+                      </p>
+                    )}
+                  </>
+                )}
+
+                {selected && template !== selected.template_text && (
+                  <button
+                    onClick={async () => {
+                      try {
+                        await api.campaigns.update(selected.id, { template_text: template })
+                        loadCampaigns()
+                      } catch (_) {}
+                    }}
+                    className="self-start text-[10px] text-green-400 hover:text-green-300 cursor-pointer
+                               bg-green-950/30 border border-green-900/50 rounded px-2 py-0.5"
+                  >
+                    💾 Сохранить сообщения
+                  </button>
+                )}
+              </>
             )}
           </div>
 
