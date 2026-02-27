@@ -437,6 +437,17 @@ export class Orchestrator {
   }
 
   async restoreFromDB() {
+    // ── Load persistent LID → Phone mappings ────────────────────────────
+    try {
+      const saved = await db.dbLoadLidMappings()
+      if (saved.size > 0) {
+        for (const [lid, phone] of saved) {
+          this._lidMap.set(lid, phone)
+        }
+        this.log(null, `🔗 Загружено ${saved.size} LID→Phone маппингов из БД`)
+      }
+    } catch (_) {}
+
     this.log(null, 'Восстановление сессий из базы данных...', 'system')
     let autoConnected = 0
     let offline = 0

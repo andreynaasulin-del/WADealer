@@ -795,14 +795,17 @@ export async function dbResolveLidByOutbound(sessionPhone, lidPhone) {
 /**
  * Migrate wa_messages from LID phone to real phone number.
  * This merges the conversation in CRM.
+ * Also stores the LID→phone mapping in wa_message_id field (prefixed with 'lid:')
+ * so it can be rebuilt after PM2 restart.
  *
  * @param {string} lidPhone — the LID number used as remote_phone
  * @param {string} realPhone — the resolved real phone number
  */
 export async function dbMigrateLidMessages(lidPhone, realPhone) {
+  // Update remote_phone AND tag the message with lid: prefix for persistence
   const { error } = await supabase
     .from('wa_messages')
-    .update({ remote_phone: realPhone })
+    .update({ remote_phone: realPhone, wa_message_id: `lid:${lidPhone}` })
     .eq('remote_phone', lidPhone)
 
   if (error) {
@@ -810,6 +813,28 @@ export async function dbMigrateLidMessages(lidPhone, realPhone) {
   } else {
     console.log(`[DB] Migrated messages: ${lidPhone} → ${realPhone}`)
   }
+}
+
+/**
+ * Load all previously resolved LID→phone mappings from DB.
+ * Used on startup to rebuild the in-memory LID map after PM2 restart.
+ *
+ * @returns {Promise<Map<string, string>>} lid → phone map
+ */
+export async function dbLoadLidMappings() {
+  const { data, error } = await supabase
+    .from('wa_messages')
+    .select('remote_phone, wa_message_id')
+    .like('wa_message_id', 'lid:%')
+
+  if (error || !data) return new Map()
+
+  const map = new Map()
+  for (const row of data) {
+    const lid = row.wa_message_id.replace('lid:', '')
+    map.set(lid, row.remote_phone)
+  }
+  return map
 }
 
 export default supabase
