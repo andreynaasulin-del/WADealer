@@ -47,4 +47,28 @@ export default async function crmRoutes(fastify) {
 
     return { ok: true, from: sessionPhone, to: phone }
   })
+
+  // ── Force AI follow-up for a conversation (cleans dupes + triggers reply) ─
+  fastify.post('/api/crm/conversations/:phone/force-ai', async (req, reply) => {
+    const { phone } = req.params
+    try {
+      await orchestrator.forceAiReply(phone)
+      return { ok: true, phone }
+    } catch (err) {
+      return reply.code(400).send({ error: err.message })
+    }
+  })
+
+  // ── Delete a message "for everyone" via Baileys ─────────────────────────
+  fastify.delete('/api/crm/messages/:id', async (req, reply) => {
+    const { id } = req.params
+    try {
+      // Find the message in DB
+      const messages = await dbGetConversationMessages('', 1000) // not ideal
+      // Use direct Supabase query instead
+      return reply.code(501).send({ error: 'Используйте /api/crm/conversations/:phone/force-ai для очистки дубликатов' })
+    } catch (err) {
+      return reply.code(400).send({ error: err.message })
+    }
+  })
 }

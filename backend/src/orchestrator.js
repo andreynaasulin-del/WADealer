@@ -241,6 +241,20 @@ export class Orchestrator {
     }))
   }
 
+  /**
+   * Delete a message "for everyone" via Baileys.
+   * Requires the wa_message_id and session_phone from wa_messages table.
+   */
+  async deleteMessage(sessionPhone, remotePhone, waMessageId) {
+    if (!waMessageId) throw new Error('Нет wa_message_id — невозможно удалить')
+    const session = this.sessions.get(sessionPhone)
+    if (!session || session.status !== 'online') throw new Error('Сессия офлайн')
+    const bareJid = `${remotePhone.replace(/\D/g, '')}@s.whatsapp.net`
+    const deleteKey = { remoteJid: bareJid, fromMe: true, id: waMessageId }
+    await session.sock.sendMessage(bareJid, { delete: deleteKey })
+    this.log(sessionPhone, `🗑️ Удалено сообщение ${waMessageId} для ${remotePhone}`)
+  }
+
   async storeMessage(sessionPhone, remotePhone, direction, body, waMessageId, leadId) {
     try {
       await db.dbInsertMessage({
@@ -441,10 +455,10 @@ export class Orchestrator {
 
       // Send the message directly (bypass sendMessage's own typing)
       const result = await session.sock.sendMessage(bareJid, { text: nextMsg })
-      void result
+      const waMessageId = result?.key?.id || null
       this._incrementDailyCount(sessionPhone)
       this._lastAiReplyTime.set(phoneKey, Date.now())
-      await this.storeMessage(sessionPhone, remotePhone, 'outbound', nextMsg, null, lead.id)
+      await this.storeMessage(sessionPhone, remotePhone, 'outbound', nextMsg, waMessageId, lead.id)
 
       const dailyLeft = this.DAILY_LIMIT - this._getDailyCount(sessionPhone)
       this.log(sessionPhone, `🤖 AI → ${remotePhone}: "${nextMsg.substring(0, 60)}${nextMsg.length > 60 ? '...' : ''}" [осталось ${dailyLeft}/${this.DAILY_LIMIT}]`)
@@ -505,6 +519,64 @@ export class Orchestrator {
     }
   }
 
+  /**
+   * Force-trigger AI follow-up for a specific phone (manual recovery).
+   * Cleans duplicate outbound messages from DB first, then triggers AI.
+   */
+  async forceAiReply(remotePhone) {
+    const phone = remotePhone.replace(/\D/g, '')
+
+    // Reset conversation-done flag
+    this._aiConversationDone.delete(phone)
+    this._replyInProgress.delete(phone)
+    this._lastAiReplyTime.delete(phone)
+
+    // Clean duplicate outbound messages from DB (keep first occurrence only)
+    try {
+      const messages = await db.dbGetConversationMessages(phone, 200)
+      const outbound = messages.filter(m => m.direction === 'outbound')
+      const seen = new Map() // body → first message id
+      const dupeIds = []
+      for (const m of outbound) {
+        const key = m.body?.toLowerCase().trim()
+        if (!key) continue
+        if (seen.has(key)) {
+          dupeIds.push(m.id)
+        } else {
+          seen.set(key, m.id)
+        }
+      }
+      if (dupeIds.length > 0) {
+        for (const id of dupeIds) {
+          await db.dbDeleteMessage(id)
+        }
+        this.log(null, `🧹 ${phone}: удалено ${dupeIds.length} дубликатов из БД`)
+      }
+    } catch (err) {
+      this.log(null, `forceAiReply cleanup error: ${err.message}`, 'error')
+    }
+
+    // Find lead
+    const lead = await db.dbFindLeadByPhone(phone)
+    if (!lead) throw new Error(`Лид не найден для ${phone}`)
+
+    // Find online session
+    let sessionPhone = null
+    const lastOutbound = await db.dbGetLastOutboundMessage(phone)
+    if (lastOutbound) sessionPhone = lastOutbound.session_phone
+    const session = this.sessions.get(sessionPhone)
+    if (!session || session.status !== 'online') {
+      // Fallback to any online session
+      for (const [ph, s] of this.sessions) {
+        if (s.status === 'online' && this.canSend(ph)) { sessionPhone = ph; break }
+      }
+    }
+    if (!sessionPhone) throw new Error('Нет онлайн сессий')
+
+    this.log(sessionPhone, `🔧 Принудительный AI-ответ для ${phone}`)
+    await this._autoReply(phone, sessionPhone, lead)
+  }
+
   // ─── Retry missed auto-replies ───────────────────────────────────────────
 
   /**
@@ -546,7 +618,7 @@ export class Orchestrator {
           const lastMsg = messages[messages.length - 1]
           if (lastMsg.direction !== 'inbound') continue  // already followed up
 
-          // Check for duplicate spam: if we sent same message 3+ times, skip (already damaged)
+          // Check for duplicate spam: if we sent same message 2+ times, skip (already damaged)
           const ourMsgs = messages.filter(m => m.direction === 'outbound')
           const msgCounts = new Map()
           for (const m of ourMsgs) {
@@ -555,7 +627,7 @@ export class Orchestrator {
           }
           let hasDupes = false
           for (const count of msgCounts.values()) {
-            if (count >= 3) { hasDupes = true; break }
+            if (count >= 2) { hasDupes = true; break }
           }
           if (hasDupes) {
             // Conversation is damaged by spam — extract data and stop

@@ -21,6 +21,17 @@ const MAX_FOLLOWUPS = 6
 /** Categories we extract */
 const CATEGORIES = ['location', 'price', 'availability', 'nationality', 'photos', 'services']
 
+/**
+ * Build token-limit param compatible with both GPT-4o (max_tokens) and GPT-5.x (max_completion_tokens).
+ * GPT-5.x rejects 'max_tokens' — must use 'max_completion_tokens'.
+ */
+function tokenLimitParam(model, limit) {
+  if (model.startsWith('gpt-5') || model.startsWith('o1') || model.startsWith('o3') || model.startsWith('o4')) {
+    return { max_completion_tokens: limit }
+  }
+  return { max_tokens: limit }
+}
+
 // ─── System prompt — structured analysis approach ───────────────────────────
 
 const SYSTEM_PROMPT = `You are pretending to be a MALE CLIENT who texted a girl from her escort ad.
@@ -104,25 +115,16 @@ export async function generateAutoReply(history) {
   // Too many messages sent → stop
   if (ourMessages.length >= MAX_FOLLOWUPS + 1) return null
 
-  // Duplicate detection: if last 2 outbound messages are the same → stop
-  if (ourMessages.length >= 2) {
-    const last = ourMessages[ourMessages.length - 1].body?.toLowerCase().trim()
-    const prev = ourMessages[ourMessages.length - 2].body?.toLowerCase().trim()
-    if (last === prev) {
-      console.log('[AI-Responder] Duplicate detected in history, stopping')
-      return null
-    }
-  }
-
-  // Broader duplicate check: if ANY outbound message appears 3+ times → stop
+  // STRICT duplicate detection: if ANY outbound message appears 2+ times → stop
+  // (was 3+ but that allowed 2 dupes which is already spam)
   const msgCounts = new Map()
   for (const m of ourMessages) {
     const key = m.body?.toLowerCase().trim()
     if (key) msgCounts.set(key, (msgCounts.get(key) || 0) + 1)
   }
-  for (const count of msgCounts.values()) {
-    if (count >= 3) {
-      console.log('[AI-Responder] Message sent 3+ times, stopping')
+  for (const [msg, count] of msgCounts.entries()) {
+    if (count >= 2) {
+      console.log(`[AI-Responder] DUPE x${count}: "${msg.substring(0, 50)}" — blocking`)
       return null
     }
   }
@@ -150,7 +152,7 @@ export async function generateAutoReply(history) {
       ],
       response_format: { type: 'json_object' },
       temperature: 0.4,
-      max_tokens: 600,
+      ...tokenLimitParam(CHAT_MODEL, 600),
     })
 
     const raw = response.choices[0].message.content?.trim()
@@ -181,12 +183,26 @@ export async function generateAutoReply(history) {
     // Safety: if duplicates found, stop
     if (parsed.duplicates_found) return null
 
-    // Safety: reply must not match any of our previous messages
+    // Safety: reply must not match any of our previous messages (exact OR fuzzy)
     const replyLower = reply.toLowerCase().trim()
+    const replyWords = new Set(replyLower.replace(/[?!.,]/g, '').split(/\s+/).filter(w => w.length > 2))
     for (const m of ourMessages) {
-      if (m.body?.toLowerCase().trim() === replyLower) {
-        console.log('[AI-Responder] Reply matches a previous message, blocking')
+      const prev = m.body?.toLowerCase().trim()
+      if (!prev) continue
+      // Exact match
+      if (prev === replyLower) {
+        console.log('[AI-Responder] Reply matches a previous message (exact), blocking')
         return null
+      }
+      // Fuzzy match: if 70%+ of words overlap → same question rephrased
+      const prevWords = new Set(prev.replace(/[?!.,]/g, '').split(/\s+/).filter(w => w.length > 2))
+      if (replyWords.size >= 2 && prevWords.size >= 2) {
+        const overlap = [...replyWords].filter(w => prevWords.has(w)).length
+        const similarity = overlap / Math.max(replyWords.size, prevWords.size)
+        if (similarity >= 0.7) {
+          console.log(`[AI-Responder] Reply too similar to previous (${(similarity * 100).toFixed(0)}%): "${prev.substring(0, 40)}" vs "${replyLower.substring(0, 40)}"`)
+          return null
+        }
       }
     }
 
@@ -244,7 +260,7 @@ Respond with ONLY valid JSON, no markdown.`,
       }],
       response_format: { type: 'json_object' },
       temperature: 0.2,
-      max_tokens: 400,
+      ...tokenLimitParam(EXTRACT_MODEL, 400),
     })
 
     return JSON.parse(response.choices[0].message.content)

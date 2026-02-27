@@ -687,6 +687,14 @@ export async function dbInsertMessage({ session_phone, remote_phone, direction, 
   if (error) throw error
 }
 
+export async function dbDeleteMessage(id) {
+  const { error } = await supabase
+    .from('wa_messages')
+    .delete()
+    .eq('id', id)
+  if (error) throw error
+}
+
 export async function dbGetConversations(session_phone) {
   let query = supabase
     .from('wa_conversations')
