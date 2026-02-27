@@ -837,4 +837,39 @@ export async function dbLoadLidMappings() {
   return map
 }
 
+// ─── Media upload ──────────────────────────────────────────────────────────────
+
+/**
+ * Upload media buffer to Supabase Storage (wa-media bucket).
+ * Returns the public URL.
+ */
+export async function dbUploadMedia(buffer, filename, contentType) {
+  const { error } = await supabase.storage
+    .from('wa-media')
+    .upload(filename, buffer, { contentType, upsert: true })
+
+  if (error) throw error
+
+  const { data } = supabase.storage
+    .from('wa-media')
+    .getPublicUrl(filename)
+
+  return data.publicUrl
+}
+
+// ─── Retry missed auto-replies ────────────────────────────────────────────────
+
+/**
+ * Get all replied leads that need AI auto-reply check.
+ */
+export async function dbGetRepliedLeads() {
+  const { data, error } = await supabase
+    .from('leads_for_invite')
+    .select('*')
+    .eq('status', 'replied')
+    .limit(50)
+  if (error) return []
+  return data || []
+}
+
 export default supabase

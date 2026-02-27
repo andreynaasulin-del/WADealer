@@ -134,20 +134,46 @@ export default function CRMPanel({ sessions, selectedPhone, onClose }: Props) {
                 ) : messages.length === 0 ? (
                   <p className="text-[#484f58] text-[10px] text-center py-4">Нет сообщений</p>
                 ) : (
-                  messages.map(msg => (
+                  messages.map(msg => {
+                    // Parse media from message body
+                    const mediaMatch = msg.body?.match(/^\[media:(image|video|audio|document|sticker):(.+?)\](.*)$/s)
+                    const isMedia = !!mediaMatch
+                    const mediaType = mediaMatch?.[1]
+                    const mediaUrl = mediaMatch?.[2]
+                    const caption = mediaMatch?.[3]?.trim()
+
+                    return (
                     <div key={msg.id} className={`flex ${msg.direction === 'outbound' ? 'justify-end' : 'justify-start'}`}>
                       <div className={`max-w-[85%] px-2.5 py-1.5 rounded-lg text-[11px] leading-relaxed ${
                         msg.direction === 'outbound'
                           ? 'bg-green-900/30 text-green-200 border border-green-800/40'
                           : 'bg-[#21262d] text-[#e6edf3] border border-[#30363d]'
                       }`}>
-                        <p className="whitespace-pre-wrap break-words">{msg.body}</p>
+                        {isMedia && mediaUrl ? (
+                          <>
+                            {mediaType === 'image' || mediaType === 'sticker' ? (
+                              <a href={mediaUrl} target="_blank" rel="noopener noreferrer">
+                                <img src={mediaUrl} alt="📷" className="max-w-[200px] max-h-[200px] rounded object-cover mb-1 cursor-pointer hover:opacity-80 transition-opacity" loading="lazy" />
+                              </a>
+                            ) : mediaType === 'video' ? (
+                              <video src={mediaUrl} controls className="max-w-[200px] max-h-[200px] rounded mb-1" />
+                            ) : mediaType === 'audio' ? (
+                              <audio src={mediaUrl} controls className="max-w-[200px] mb-1" />
+                            ) : (
+                              <a href={mediaUrl} target="_blank" rel="noopener noreferrer" className="text-blue-400 underline">📎 Документ</a>
+                            )}
+                            {caption && <p className="whitespace-pre-wrap break-words">{caption}</p>}
+                          </>
+                        ) : (
+                          <p className="whitespace-pre-wrap break-words">{msg.body}</p>
+                        )}
                         <p className={`text-[9px] mt-0.5 ${msg.direction === 'outbound' ? 'text-green-600' : 'text-[#484f58]'}`}>
                           {new Date(msg.created_at).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })}
                         </p>
                       </div>
                     </div>
-                  ))
+                    )
+                  })
                 )}
                 <div ref={chatEndRef} />
               </div>

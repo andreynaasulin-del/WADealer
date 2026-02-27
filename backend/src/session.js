@@ -6,6 +6,7 @@ import makeWASocket, {
   DisconnectReason,
   fetchLatestBaileysVersion,
   Browsers,
+  downloadMediaMessage,
 } from '@whiskeysockets/baileys'
 import { HttpsProxyAgent } from 'https-proxy-agent'
 import QRCode from 'qrcode'
@@ -259,9 +260,37 @@ export class Session extends EventEmitter {
           }
 
           // Extract text from various message types
-          const text = msg.message?.conversation
+          let text = msg.message?.conversation
             || msg.message?.extendedTextMessage?.text
             || ''
+
+          // ── Media detection (photos, videos, audio, docs) ──────────
+          const mediaTypes = {
+            imageMessage:    { emoji: '📷', label: 'Фото',     ext: 'jpg' },
+            videoMessage:    { emoji: '🎥', label: 'Видео',    ext: 'mp4' },
+            audioMessage:    { emoji: '🎤', label: 'Аудио',    ext: 'ogg' },
+            documentMessage: { emoji: '📎', label: 'Документ', ext: 'pdf' },
+            stickerMessage:  { emoji: '🏷️', label: 'Стикер',  ext: 'webp' },
+          }
+
+          for (const [mType, mInfo] of Object.entries(mediaTypes)) {
+            const mediaMsg = msg.message?.[mType]
+            if (!mediaMsg) continue
+            const caption = mediaMsg.caption || ''
+            try {
+              const buffer = await downloadMediaMessage(msg, 'buffer', {})
+              const ts = Date.now()
+              const fname = `${ts}_${from}.${mInfo.ext}`
+              const url = await this.orchestrator.db.dbUploadMedia(buffer, fname, mediaMsg.mimetype || `application/octet-stream`)
+              text = `[media:${mType.replace('Message', '')}:${url}]`
+              if (caption) text += `\n${caption}`
+            } catch (err) {
+              text = `[${mInfo.emoji} ${mInfo.label}]`
+              if (caption) text += `\n${caption}`
+              this.log(`Медиа загрузка: ${err.message}`, 'warn')
+            }
+            break
+          }
 
           if (msg.key.fromMe) {
             // Outbound sent directly from phone — store for CRM

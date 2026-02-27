@@ -436,6 +436,64 @@ export class Orchestrator {
     }
   }
 
+  // ─── Retry missed auto-replies ───────────────────────────────────────────
+
+  /**
+   * Scan for conversations where leads replied but we haven't sent an AI follow-up.
+   * This catches cases where:
+   * - LID resolution wasn't available at the time of reply
+   * - PM2 restarted before AI could process
+   * - Any transient error prevented auto-reply
+   */
+  async _retryMissedAutoReplies() {
+    try {
+      const leads = await db.dbGetRepliedLeads()
+      if (leads.length === 0) return
+
+      let retried = 0
+      for (const lead of leads) {
+        try {
+          const phone = lead.phone.replace(/\D/g, '')
+
+          // Get conversation messages
+          const messages = await db.dbGetConversationMessages(phone, 100)
+          if (!messages || messages.length < 2) continue
+
+          // Check: is the last message inbound? (meaning we haven't replied yet)
+          const lastMsg = messages[messages.length - 1]
+          if (lastMsg.direction !== 'inbound') continue  // already followed up
+
+          // Find which session sent to this lead
+          const lastOutbound = await db.dbGetLastOutboundMessage(phone)
+          if (!lastOutbound) continue
+          const sessionPhone = lastOutbound.session_phone
+
+          // Check if session is online
+          const session = this.sessions.get(sessionPhone)
+          if (!session || session.status !== 'online') continue
+
+          // Check daily limit
+          if (!this.canSend(sessionPhone)) continue
+
+          this.log(sessionPhone, `🔄 Пропущенный AI-ответ для ${phone} — отправляю`)
+          await this._autoReply(phone, sessionPhone, lead)
+          retried++
+
+          // Small delay between retries to avoid rate limiting
+          await new Promise(r => setTimeout(r, 5000))
+        } catch (err) {
+          this.log(null, `🔄 Ошибка retry для ${lead.phone}: ${err.message}`, 'error')
+        }
+      }
+
+      if (retried > 0) {
+        this.log(null, `🔄 Отправлено ${retried} пропущенных AI-ответов`)
+      }
+    } catch (err) {
+      this.log(null, `🔄 _retryMissedAutoReplies ошибка: ${err.message}`, 'error')
+    }
+  }
+
   async restoreFromDB() {
     // ── Load persistent LID → Phone mappings ────────────────────────────
     try {
@@ -497,6 +555,12 @@ export class Orchestrator {
     // Wait for sessions to connect, then re-load pending leads into queue
     const RESUME_DELAY = 45_000 // 45 sec — enough for sessions to reconnect
     setTimeout(() => this._resumeRunningCampaigns(), RESUME_DELAY)
+
+    // ── Retry missed auto-replies ──────────────────────────────────────
+    // 60 sec after startup: catch conversations where AI didn't reply
+    setTimeout(() => this._retryMissedAutoReplies(), 60_000)
+    // Then check every 3 minutes
+    setInterval(() => this._retryMissedAutoReplies(), 3 * 60_000)
   }
 
   /**
