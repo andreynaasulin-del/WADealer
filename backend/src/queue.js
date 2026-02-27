@@ -117,7 +117,8 @@ export class MessageQueue {
       const session = this._findOnlineSession(item.sessionPhone, itemPlatform)
       if (!session) {
         this.orchestrator.log(item.sessionPhone, `Сессия не в сети — ожидание 30с`, 'warn', itemPlatform)
-        await sleep(30_000)
+        await this._sleepWithCheck(30_000)
+        if (this._stopSignal) break
         continue
       }
 
