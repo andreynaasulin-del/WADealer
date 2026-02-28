@@ -77,4 +77,18 @@ export default async function sessionRoutes(fastify) {
       return reply.code(500).send({ error: err.message })
     }
   })
+
+  // POST /api/sessions/:phone/pairing-code — connect via phone number + code (no QR)
+  fastify.post('/api/sessions/:phone/pairing-code', async (req, reply) => {
+    const phone = decodeURIComponent(req.params.phone)
+    const session = orchestrator.sessions.get(phone)
+    if (!session) return reply.code(404).send({ error: 'Сессия не найдена' })
+    if (session.status === 'online') return reply.code(400).send({ error: 'Сессия уже онлайн' })
+    try {
+      await session.startWithPairingCode()
+      return reply.send({ ok: true, message: 'Код запрошен — ожидай по WebSocket' })
+    } catch (err) {
+      return reply.code(500).send({ error: err.message })
+    }
+  })
 }

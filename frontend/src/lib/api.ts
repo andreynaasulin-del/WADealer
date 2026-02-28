@@ -115,6 +115,8 @@ export const api = {
       req<void>(`/sessions/${encodeURIComponent(phone)}`, { method: 'DELETE' }),
     qr: (phone: string) =>
       req<{ qrCode: string } | null>(`/sessions/${encodeURIComponent(phone)}/qr`),
+    pairingCode: (phone: string) =>
+      req<{ ok: boolean; message: string }>(`/sessions/${encodeURIComponent(phone)}/pairing-code`, { method: 'POST', body: '{}' }),
     send: (phone: string, to: string, text: string) =>
       req<{ ok: boolean; to: string; from: string }>(`/sessions/${encodeURIComponent(phone)}/send`, {
         method: 'POST', body: JSON.stringify({ to, text }),

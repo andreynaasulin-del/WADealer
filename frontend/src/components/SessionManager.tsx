@@ -3,43 +3,48 @@ import { useState } from 'react'
 import { api, type Session, type Campaign } from '@/lib/api'
 
 const STATUS_BORDER: Record<string, string> = {
-  online:       'border-green-500/40',
-  qr_pending:   'border-yellow-500/40',
-  initializing: 'border-blue-500/40',
-  offline:      'border-zinc-700',
-  banned:       'border-red-500/40',
+  online:          'border-green-500/40',
+  qr_pending:      'border-yellow-500/40',
+  pairing_pending: 'border-purple-500/40',
+  initializing:    'border-blue-500/40',
+  offline:         'border-zinc-700',
+  banned:          'border-red-500/40',
 }
 
 const STATUS_BG: Record<string, string> = {
-  online:       'bg-green-950/20',
-  qr_pending:   'bg-yellow-950/20',
-  initializing: 'bg-blue-950/20',
-  offline:      'bg-zinc-900',
-  banned:       'bg-red-950/20',
+  online:          'bg-green-950/20',
+  qr_pending:      'bg-yellow-950/20',
+  pairing_pending: 'bg-purple-950/20',
+  initializing:    'bg-blue-950/20',
+  offline:         'bg-zinc-900',
+  banned:          'bg-red-950/20',
 }
 
 const STATUS_DOT: Record<string, string> = {
-  online:       'bg-green-400',
-  qr_pending:   'bg-yellow-400 animate-pulse',
-  initializing: 'bg-blue-400 animate-pulse',
-  offline:      'bg-zinc-600',
-  banned:       'bg-red-500',
+  online:          'bg-green-400',
+  qr_pending:      'bg-yellow-400 animate-pulse',
+  pairing_pending: 'bg-purple-400 animate-pulse',
+  initializing:    'bg-blue-400 animate-pulse',
+  offline:         'bg-zinc-600',
+  banned:          'bg-red-500',
 }
 
 const STATUS_LABELS: Record<string, string> = {
-  online:       'В сети',
-  qr_pending:   'Ожидает QR',
-  initializing: 'Подключение...',
-  offline:      'Не в сети',
-  banned:       'Заблокирован',
+  online:          'В сети',
+  qr_pending:      'Ожидает QR',
+  pairing_pending: 'Ожидает код',
+  initializing:    'Подключение...',
+  offline:         'Не в сети',
+  banned:          'Заблокирован',
 }
 
 const STATUS_LABEL_COLOR: Record<string, string> = {
-  online:       'text-green-400',
-  qr_pending:   'text-yellow-400',
-  initializing: 'text-blue-400',
-  offline:      'text-zinc-500',
-  banned:       'text-red-400',
+  online:          'text-green-400',
+  qr_pending:      'text-yellow-400',
+  pairing_pending: 'text-purple-400',
+  initializing:    'text-blue-400',
+  offline:         'text-zinc-500',
+  banned:          'text-red-400',
 }
 
 // ── Ban-risk analyser ─────────────────────────────────────────────────────────
@@ -138,9 +143,11 @@ interface Props {
   onRefresh: () => void
   selectedPhone: string | null
   onSelect: (phone: string) => void
+  pairingCodes?: Record<string, string>
+  onPairingCodeUsed?: (phone: string) => void
 }
 
-export default function SessionManager({ sessions, campaigns, onRefresh, selectedPhone, onSelect }: Props) {
+export default function SessionManager({ sessions, campaigns, onRefresh, selectedPhone, onSelect, pairingCodes = {}, onPairingCodeUsed }: Props) {
   const [phone, setPhone]                   = useState('')
   const [loading, setLoading]               = useState(false)
   const [error, setError]                   = useState<string | null>(null)
@@ -148,6 +155,8 @@ export default function SessionManager({ sessions, campaigns, onRefresh, selecte
   const [deleteConfirm, setDeleteConfirm]   = useState<string | null>(null)
   const [connecting, setConnecting]         = useState<string | null>(null)
   const [riskTooltip, setRiskTooltip]       = useState<string | null>(null)
+  const [connectMode, setConnectMode]       = useState<Record<string, 'qr' | 'code'>>({})
+  const [requestingCode, setRequestingCode] = useState<string | null>(null)
 
   async function addSession() {
     if (!phone.trim()) return
@@ -197,6 +206,18 @@ export default function SessionManager({ sessions, campaigns, onRefresh, selecte
       else setError('QR ещё не готов — подожди пару секунд и попробуй снова')
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : 'Ошибка загрузки QR')
+    }
+  }
+
+  async function requestPairingCode(p: string) {
+    setRequestingCode(p); setError(null)
+    try {
+      await api.sessions.pairingCode(p)
+      // Code arrives via WebSocket pairing_code event
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : 'Ошибка запроса кода')
+    } finally {
+      setRequestingCode(null)
     }
   }
 
@@ -396,15 +417,51 @@ export default function SessionManager({ sessions, campaigns, onRefresh, selecte
 
               {/* Connect button — shown when offline */}
               {s.status === 'offline' && (
-                <button
-                  onClick={(e) => { e.stopPropagation(); connectSession(s.phone) }}
-                  disabled={connecting === s.phone}
-                  className="text-green-400 text-[10px] border border-green-700/50 bg-green-950/30 rounded px-3 py-1
-                             hover:bg-green-900/40 transition-colors cursor-pointer disabled:opacity-50
-                             disabled:cursor-not-allowed font-bold"
-                >
-                  {connecting === s.phone ? '...' : '▶ Подключить'}
-                </button>
+                <div className="flex items-center gap-1" onClick={e => e.stopPropagation()}>
+                  {/* Mode toggle */}
+                  <div className="flex rounded overflow-hidden border border-zinc-700 text-[9px] font-bold">
+                    <button
+                      onClick={() => setConnectMode(prev => ({ ...prev, [s.phone]: 'qr' }))}
+                      className={`px-1.5 py-0.5 transition-colors cursor-pointer ${
+                        (connectMode[s.phone] ?? 'qr') === 'qr'
+                          ? 'bg-yellow-900/50 text-yellow-400'
+                          : 'bg-zinc-900 text-zinc-600 hover:text-zinc-400'
+                      }`}
+                    >QR</button>
+                    <button
+                      onClick={() => setConnectMode(prev => ({ ...prev, [s.phone]: 'code' }))}
+                      className={`px-1.5 py-0.5 transition-colors cursor-pointer ${
+                        connectMode[s.phone] === 'code'
+                          ? 'bg-purple-900/50 text-purple-400'
+                          : 'bg-zinc-900 text-zinc-600 hover:text-zinc-400'
+                      }`}
+                    >📱</button>
+                  </div>
+                  {/* QR mode */}
+                  {(connectMode[s.phone] ?? 'qr') === 'qr' && (
+                    <button
+                      onClick={() => connectSession(s.phone)}
+                      disabled={connecting === s.phone}
+                      className="text-green-400 text-[10px] border border-green-700/50 bg-green-950/30 rounded px-2.5 py-1
+                                 hover:bg-green-900/40 transition-colors cursor-pointer disabled:opacity-50
+                                 disabled:cursor-not-allowed font-bold"
+                    >
+                      {connecting === s.phone ? '...' : '▶ QR'}
+                    </button>
+                  )}
+                  {/* Phone code mode */}
+                  {connectMode[s.phone] === 'code' && (
+                    <button
+                      onClick={() => requestPairingCode(s.phone)}
+                      disabled={requestingCode === s.phone}
+                      className="text-purple-400 text-[10px] border border-purple-700/50 bg-purple-950/30 rounded px-2.5 py-1
+                                 hover:bg-purple-900/40 transition-colors cursor-pointer disabled:opacity-50
+                                 disabled:cursor-not-allowed font-bold"
+                    >
+                      {requestingCode === s.phone ? '...' : '📱 Код'}
+                    </button>
+                  )}
+                </div>
               )}
 
               {/* QR button — show when QR available (initializing or qr_pending) */}
@@ -416,6 +473,20 @@ export default function SessionManager({ sessions, campaigns, onRefresh, selecte
                 >
                   📷 Показать QR
                 </button>
+              )}
+
+              {/* Pairing code display — shown when pairing_pending or code just arrived */}
+              {(s.status === 'pairing_pending' || pairingCodes[s.phone]) && pairingCodes[s.phone] && (
+                <div className="flex items-center gap-1.5" onClick={e => e.stopPropagation()}>
+                  <code className="text-purple-300 font-bold text-sm tracking-[0.2em] bg-purple-950/40 border border-purple-700/60 rounded px-2 py-0.5 animate-pulse font-mono">
+                    {pairingCodes[s.phone].replace(/(.{4})(.{4})/, '$1-$2')}
+                  </code>
+                  <button
+                    onClick={() => onPairingCodeUsed?.(s.phone)}
+                    className="text-[9px] text-zinc-500 hover:text-zinc-300 cursor-pointer"
+                    title="Скрыть"
+                  >✕</button>
+                </div>
               )}
 
               {/* Reconnect — shown when initializing/qr_pending but no QR yet, or as secondary action */}
@@ -439,6 +510,13 @@ export default function SessionManager({ sessions, campaigns, onRefresh, selecte
                 </span>
               )}
             </div>
+
+            {/* Pairing code instructions */}
+            {(s.status === 'pairing_pending' || pairingCodes[s.phone]) && pairingCodes[s.phone] && (
+              <p className="text-[9px] text-purple-400/70 pl-7 mt-1">
+                WhatsApp → Привязанные устройства → Вход по номеру телефона → введи код
+              </p>
+            )}
 
             {/* Bottom row: mini-stats — only for online sessions or sessions with campaigns */}
             {(s.status === 'online' || st.count > 0) && (

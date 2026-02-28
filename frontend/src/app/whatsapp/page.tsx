@@ -32,6 +32,7 @@ export default function WhatsAppDashboard() {
   const [showCRM, setShowCRM]               = useState(false)
   const [showAI, setShowAI]                 = useState(false)
   const [demoMode, setDemoMode]             = useState(false)
+  const [pairingCodes, setPairingCodes]     = useState<Record<string, string>>({})
 
   useEffect(() => {
     if (typeof window !== 'undefined') setDemoMode(localStorage.getItem('wa_dealer_demo_mode') === '1')
@@ -104,6 +105,12 @@ export default function WhatsAppDashboard() {
       }
       case 'session_created': loadSessions(); break
       case 'session_deleted': setSessions(prev => prev.filter(s => s.phone !== event.phone)); break
+      case 'pairing_code': {
+        const { session: phone, code } = event as unknown as { session: string; code: string }
+        setPairingCodes(prev => ({ ...prev, [phone]: code }))
+        setSessions(prev => prev.map(s => s.phone === phone ? { ...s, status: 'pairing_pending' as Session['status'] } : s))
+        break
+      }
       case 'qr': {
         const { session: phone, qrCode } = event as unknown as { session: string; qrCode: string }
         setSessions(prev => prev.map(s => s.phone === phone ? { ...s, qrCode, status: 'qr_pending' } : s))
@@ -327,6 +334,8 @@ export default function WhatsAppDashboard() {
                 onRefresh={loadSessions}
                 selectedPhone={selectedPhone}
                 onSelect={setSelectedPhone}
+                pairingCodes={pairingCodes}
+                onPairingCodeUsed={(phone) => setPairingCodes(prev => { const n = {...prev}; delete n[phone]; return n })}
               />
             </div>
             <div className="bg-[#161b22] border border-[#30363d] rounded-lg p-3 sm:p-4 overflow-y-auto max-h-[360px] sm:max-h-[480px]">
