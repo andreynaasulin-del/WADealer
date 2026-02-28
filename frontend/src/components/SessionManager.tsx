@@ -415,91 +415,57 @@ export default function SessionManager({ sessions, campaigns, onRefresh, selecte
 
               <div className="flex-1" />
 
-              {/* Connect button — shown when offline */}
-              {s.status === 'offline' && (
+              {/* Connect / Pairing — shown for any non-online, non-banned session */}
+              {s.status !== 'online' && s.status !== 'banned' && (
                 <div className="flex items-center gap-1" onClick={e => e.stopPropagation()}>
-                  {/* Mode toggle */}
-                  <div className="flex rounded overflow-hidden border border-zinc-700 text-[9px] font-bold">
-                    <button
-                      onClick={() => setConnectMode(prev => ({ ...prev, [s.phone]: 'qr' }))}
-                      className={`px-1.5 py-0.5 transition-colors cursor-pointer ${
-                        (connectMode[s.phone] ?? 'qr') === 'qr'
-                          ? 'bg-yellow-900/50 text-yellow-400'
-                          : 'bg-zinc-900 text-zinc-600 hover:text-zinc-400'
-                      }`}
-                    >QR</button>
-                    <button
-                      onClick={() => setConnectMode(prev => ({ ...prev, [s.phone]: 'code' }))}
-                      className={`px-1.5 py-0.5 transition-colors cursor-pointer ${
-                        connectMode[s.phone] === 'code'
-                          ? 'bg-purple-900/50 text-purple-400'
-                          : 'bg-zinc-900 text-zinc-600 hover:text-zinc-400'
-                      }`}
-                    >📱</button>
-                  </div>
-                  {/* QR mode */}
-                  {(connectMode[s.phone] ?? 'qr') === 'qr' && (
-                    <button
-                      onClick={() => connectSession(s.phone)}
-                      disabled={connecting === s.phone}
-                      className="text-green-400 text-[10px] border border-green-700/50 bg-green-950/30 rounded px-2.5 py-1
-                                 hover:bg-green-900/40 transition-colors cursor-pointer disabled:opacity-50
-                                 disabled:cursor-not-allowed font-bold"
-                    >
-                      {connecting === s.phone ? '...' : '▶ QR'}
-                    </button>
-                  )}
-                  {/* Phone code mode */}
-                  {connectMode[s.phone] === 'code' && (
-                    <button
-                      onClick={() => requestPairingCode(s.phone)}
-                      disabled={requestingCode === s.phone}
-                      className="text-purple-400 text-[10px] border border-purple-700/50 bg-purple-950/30 rounded px-2.5 py-1
-                                 hover:bg-purple-900/40 transition-colors cursor-pointer disabled:opacity-50
-                                 disabled:cursor-not-allowed font-bold"
-                    >
-                      {requestingCode === s.phone ? '...' : '📱 Код'}
-                    </button>
+                  {/* Pairing code display — if code just arrived */}
+                  {pairingCodes[s.phone] ? (
+                    <div className="flex items-center gap-1.5">
+                      <code className="text-purple-300 font-bold text-sm tracking-[0.2em] bg-purple-950/40 border border-purple-700/60 rounded px-2 py-0.5 animate-pulse font-mono">
+                        {pairingCodes[s.phone].replace(/(.{4})(.{4})/, '$1-$2')}
+                      </code>
+                      <button
+                        onClick={() => onPairingCodeUsed?.(s.phone)}
+                        className="text-[9px] text-zinc-500 hover:text-zinc-300 cursor-pointer"
+                        title="Скрыть"
+                      >✕</button>
+                    </div>
+                  ) : (
+                    <>
+                      {/* QR button — if QR available */}
+                      {s.qrCode && (
+                        <button
+                          onClick={() => setQrModal(s.qrCode!)}
+                          className="text-yellow-400 text-[10px] border border-yellow-600/50 bg-yellow-950/30 rounded px-2 py-1
+                                     hover:bg-yellow-900/40 transition-colors cursor-pointer font-bold animate-pulse"
+                        >
+                          📷 QR
+                        </button>
+                      )}
+                      {/* Mode toggle QR / 📱 */}
+                      <div className="flex rounded overflow-hidden border border-zinc-700 text-[9px] font-bold">
+                        <button
+                          onClick={() => { setConnectMode(prev => ({ ...prev, [s.phone]: 'qr' })); connectSession(s.phone) }}
+                          disabled={connecting === s.phone}
+                          className={`px-1.5 py-0.5 transition-colors cursor-pointer ${
+                            (connectMode[s.phone] ?? 'qr') === 'qr'
+                              ? 'bg-yellow-900/50 text-yellow-400'
+                              : 'bg-zinc-900 text-zinc-600 hover:text-zinc-400'
+                          }`}
+                        >▶ QR</button>
+                        <button
+                          onClick={() => { setConnectMode(prev => ({ ...prev, [s.phone]: 'code' })); requestPairingCode(s.phone) }}
+                          disabled={requestingCode === s.phone}
+                          className={`px-1.5 py-0.5 transition-colors cursor-pointer ${
+                            connectMode[s.phone] === 'code'
+                              ? 'bg-purple-900/50 text-purple-400'
+                              : 'bg-zinc-900 text-zinc-600 hover:text-zinc-400'
+                          }`}
+                        >{requestingCode === s.phone ? '...' : '📱 Код'}</button>
+                      </div>
+                    </>
                   )}
                 </div>
-              )}
-
-              {/* QR button — show when QR available (initializing or qr_pending) */}
-              {(s.status === 'initializing' || s.status === 'qr_pending') && s.qrCode && (
-                <button
-                  onClick={(e) => { e.stopPropagation(); setQrModal(s.qrCode!) }}
-                  className="text-yellow-400 text-[10px] border border-yellow-600/50 bg-yellow-950/30 rounded px-3 py-1
-                             hover:bg-yellow-900/40 transition-colors cursor-pointer font-bold animate-pulse"
-                >
-                  📷 Показать QR
-                </button>
-              )}
-
-              {/* Pairing code display — shown when pairing_pending or code just arrived */}
-              {(s.status === 'pairing_pending' || pairingCodes[s.phone]) && pairingCodes[s.phone] && (
-                <div className="flex items-center gap-1.5" onClick={e => e.stopPropagation()}>
-                  <code className="text-purple-300 font-bold text-sm tracking-[0.2em] bg-purple-950/40 border border-purple-700/60 rounded px-2 py-0.5 animate-pulse font-mono">
-                    {pairingCodes[s.phone].replace(/(.{4})(.{4})/, '$1-$2')}
-                  </code>
-                  <button
-                    onClick={() => onPairingCodeUsed?.(s.phone)}
-                    className="text-[9px] text-zinc-500 hover:text-zinc-300 cursor-pointer"
-                    title="Скрыть"
-                  >✕</button>
-                </div>
-              )}
-
-              {/* Reconnect — shown when initializing/qr_pending but no QR yet, or as secondary action */}
-              {(s.status === 'initializing' || s.status === 'qr_pending') && !s.qrCode && (
-                <button
-                  onClick={(e) => { e.stopPropagation(); reconnectAndShowQR(s.phone) }}
-                  disabled={connecting === s.phone}
-                  className="text-blue-400 text-[10px] border border-blue-700/50 bg-blue-950/30 rounded px-3 py-1
-                             hover:bg-blue-900/40 transition-colors cursor-pointer disabled:opacity-50
-                             disabled:cursor-not-allowed font-bold animate-pulse"
-                >
-                  {connecting === s.phone ? '...' : '⟳ Переподключить'}
-                </button>
               )}
 
               {/* Online indicator */}
