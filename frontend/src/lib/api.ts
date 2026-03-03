@@ -6,46 +6,7 @@ function getAuthToken(): string | null {
   return localStorage.getItem(AUTH_STORAGE_KEY)
 }
 
-function isDemoMode(): boolean {
-  if (typeof window === 'undefined') return false
-  return localStorage.getItem('wa_dealer_demo_mode') === '1'
-}
-
-// ── Demo/mock data when backend is offline ─────────────────────────────────
-const MOCK: Record<string, unknown> = {
-  '/sessions': [
-    { id: 'demo-1', phone: '+972 55-975-3135', status: 'online', qrCode: null, proxyPort: '10000', connectedAt: new Date().toISOString() },
-    { id: 'demo-2', phone: '+972 52-311-4020', status: 'online', qrCode: null, proxyPort: '10001', connectedAt: new Date().toISOString() },
-    { id: 'demo-3', phone: '+972 54-912-9166', status: 'online', qrCode: null, proxyPort: '10002', connectedAt: new Date().toISOString() },
-    { id: 'demo-4', phone: '+972 52-443-1703', status: 'offline', qrCode: null, proxyPort: '10003', connectedAt: null },
-  ],
-  '/campaigns': [
-    { id: 'c1', name: 'Israel Lead Gen', template_text: '{Привет|Шалом|Хей}! Интересует {предложение|сотрудничество}? Напиши — расскажу подробнее 🚀', status: 'paused', session_id: null, delay_min_sec: 45, delay_max_sec: 120, sent_today: 0, total_sent: 0, total_errors: 0, total_leads: 686, ai_criteria: 'Клиент из Израиля, заинтересован в покупке товара', created_at: new Date().toISOString() },
-  ],
-  '/campaigns/queue': { status: 'idle', size: 0 },
-  '/stats': { sessions_total: 4, sessions_online: 3, sessions_offline: 1, sessions_banned: 0, sent_today: 0, in_queue: 686, errors: 0, queue_status: 'idle', queue_size: 0 },
-  '/leads': { data: [], count: 686 },
-  '/crm/conversations': [
-    { remote_phone: '+972523114020', session_phone: '+972559753135', last_message: 'שלום, מעוניין בהצעה שלכם', last_direction: 'inbound', last_message_at: new Date().toISOString() },
-    { remote_phone: '+972549129166', session_phone: '+972559753135', last_message: 'Отправлено!', last_direction: 'outbound', last_message_at: new Date(Date.now() - 3600000).toISOString() },
-  ],
-  '/telegram/accounts': [],
-  '/telegram/campaigns': [],
-  '/telegram/stats': { accounts_total: 0, accounts_active: 0, accounts_disconnected: 0, accounts_error: 0, sent_today: 0, in_queue: 0, errors: 0 },
-  '/auth/invites': [],
-}
-
-function getMock<T>(path: string): T {
-  // Match dynamic paths
-  const cleanPath = path.split('?')[0]
-  if (cleanPath.startsWith('/crm/conversations/')) {
-    return [
-      { id: 'm1', session_phone: '+79001234567', remote_phone: cleanPath.split('/')[3], direction: 'inbound', body: 'Привет! Меня интересует товар', wa_message_id: null, lead_id: null, created_at: new Date(Date.now() - 120000).toISOString() },
-      { id: 'm2', session_phone: '+79001234567', remote_phone: cleanPath.split('/')[3], direction: 'outbound', body: 'Здравствуйте! Конечно, расскажу подробнее', wa_message_id: null, lead_id: null, created_at: new Date(Date.now() - 60000).toISOString() },
-    ] as T
-  }
-  return (MOCK[cleanPath] ?? []) as T
-}
+// No demo mode — always use real backend
 
 async function req<T>(path: string, opts?: RequestInit): Promise<T> {
   const token = getAuthToken()
@@ -55,35 +16,13 @@ async function req<T>(path: string, opts?: RequestInit): Promise<T> {
     ...(opts?.headers as Record<string, string> || {}),
   }
 
-  // If we're in demo mode — skip network entirely, return mocks immediately
-  if (isDemoMode()) {
-    if (!opts?.method || opts.method === 'GET') {
-      return getMock<T>(path)
-    }
-    return { ok: true, id: `demo_${Date.now()}` } as T
-  }
-
-  // Try real backend
+  // Try real backend — no mock fallback
   let res: Response
   try {
     res = await fetch(`${BASE}${path}`, { ...opts, headers })
   } catch (_e) {
     void _e
-    // Network error → fallback to mock
-    if (!opts?.method || opts.method === 'GET') return getMock<T>(path)
     throw new Error('Сервер недоступен')
-  }
-
-  // Check if response is actually JSON (not Vercel HTML error page)
-  let json: T
-  try {
-    const text = await res.text()
-    json = JSON.parse(text) as T
-  } catch (_e) {
-    void _e
-    // Response is HTML/garbage → fallback to mock
-    if (!opts?.method || opts.method === 'GET') return getMock<T>(path)
-    throw new Error('Сервер вернул невалидный ответ')
   }
 
   // Handle 401 — redirect to login
@@ -93,12 +32,22 @@ async function req<T>(path: string, opts?: RequestInit): Promise<T> {
     throw new Error('Unauthorized')
   }
 
+  // Parse JSON
+  let json: T
+  try {
+    const text = await res.text()
+    if (!text || res.status === 204) return undefined as T
+    json = JSON.parse(text) as T
+  } catch (_e) {
+    void _e
+    throw new Error('Сервер вернул невалидный ответ')
+  }
+
   if (!res.ok) {
     const errObj = json as Record<string, unknown>
     throw new Error((errObj?.error as string) || res.statusText)
   }
 
-  if (res.status === 204) return undefined as T
   return json
 }
 
@@ -252,7 +201,7 @@ export const api = {
 export interface Session {
   id: string
   phone: string
-  status: 'initializing' | 'qr_pending' | 'online' | 'offline' | 'banned'
+  status: 'initializing' | 'qr_pending' | 'online' | 'offline' | 'banned' | 'pairing_pending' | 'reconnecting'
   qrCode: string | null
   proxyPort: string | null
   connectedAt: string | null
