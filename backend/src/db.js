@@ -875,7 +875,7 @@ export async function dbGetRepliedLeads() {
     .from('leads_for_invite')
     .select('*')
     .eq('status', 'replied')
-    .limit(50)
+    .limit(500)
   if (error) return []
   return data || []
 }

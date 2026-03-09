@@ -5,7 +5,11 @@ import {
   dbUpdateCampaign,
   dbDeleteCampaign,
   dbGetLeadsCounts,
+  dbGetRepliedLeads,
+  dbGetConversationMessages,
+  dbUpdateLeadAI,
 } from '../db.js'
+import { extractConversationData, calculateScore, scoreCategory } from '../ai-responder.js'
 
 export default async function campaignRoutes(fastify) {
   // GET /api/campaigns — includes total_leads count
@@ -76,6 +80,108 @@ export default async function campaignRoutes(fastify) {
     return reply.send({
       status: orchestrator.queue.status,
       size:   orchestrator.queue.size,
+    })
+  })
+
+  // POST /api/leads/batch-score — score all replied leads 0-100
+  fastify.post('/api/leads/batch-score', async (_req, reply) => {
+    const leads = await dbGetRepliedLeads()
+    let scored = 0, errors = 0, skipped = 0
+
+    for (const lead of leads) {
+      try {
+        const phone = lead.phone.replace(/\D/g, '')
+        let data = null
+
+        // Try parsing existing ai_reason first (already extracted data)
+        if (lead.ai_reason) {
+          try { data = JSON.parse(lead.ai_reason) } catch {}
+        }
+
+        // If no data yet, extract from conversation
+        if (!data || !data.city) {
+          const messages = await dbGetConversationMessages(phone, 100)
+          if (messages && messages.length >= 2) {
+            data = await extractConversationData(messages)
+          }
+        }
+
+        if (!data) { skipped++; continue }
+
+        // Calculate numeric score
+        const num = calculateScore(data)
+        const cat = scoreCategory(num)
+
+        // Store score in ai_reason JSON + update category
+        data.score_num = num
+        await dbUpdateLeadAI(lead.id, {
+          ai_score: cat,
+          ai_reason: JSON.stringify(data),
+        })
+        scored++
+      } catch (err) {
+        console.error(`[batch-score] Error for ${lead.phone}:`, err.message)
+        errors++
+      }
+    }
+
+    return reply.send({ ok: true, total: leads.length, scored, errors, skipped })
+  })
+
+  // GET /api/leads/feed?min_score=20&limit=200
+  // Returns non-empty leads sorted by score — for the public feed on site
+  fastify.get('/api/leads/feed', async (req, reply) => {
+    const minScore = Number(req.query.min_score ?? 20)
+    const limit    = Math.min(Number(req.query.limit ?? 200), 500)
+
+    const leads = await dbGetRepliedLeads()
+
+    const enriched = []
+    for (const lead of leads) {
+      let parsed = null
+      try { parsed = JSON.parse(lead.ai_reason) } catch {}
+
+      const score = parsed?.score_num ?? null
+
+      // Skip if no score or score too low
+      if (score == null || score < minScore) continue
+
+      const filled = v => v && v !== 'null' && v !== 'N/A' && v !== 'unknown'
+
+      // Must have at least city OR address, AND price
+      const hasLocation = filled(parsed?.city) || filled(parsed?.address)
+      const hasPrice    = filled(parsed?.price_text) || filled(parsed?.price_min)
+      if (!hasLocation && !hasPrice) continue
+
+      enriched.push({
+        phone:     lead.phone,
+        score,
+        category:  score >= 80 ? 'HOT' : score >= 50 ? 'WARM' : score >= 20 ? 'COLD' : 'IRRELEVANT',
+        city:                  parsed?.city || null,
+        address:               parsed?.address || null,
+        price_text:            parsed?.price_text || null,
+        price_min:             parsed?.price_min || null,
+        price_max:             parsed?.price_max || null,
+        nationality:           parsed?.nationality || null,
+        incall_outcall:        parsed?.incall_outcall || null,
+        independent_or_agency: parsed?.independent_or_agency || null,
+        has_photos:            parsed?.has_photos || false,
+        has_video:             parsed?.has_video || false,
+        age:                   parsed?.age || null,
+        services:              parsed?.services || null,
+        availability:          parsed?.availability || null,
+        sentiment:             parsed?.sentiment || null,
+      })
+    }
+
+    enriched.sort((a, b) => b.score - a.score)
+    const page = enriched.slice(0, limit)
+
+    return reply.send({
+      ok: true,
+      total: enriched.length,
+      returned: page.length,
+      leads: page,
     })
   })
 }

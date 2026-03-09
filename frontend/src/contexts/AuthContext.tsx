@@ -15,19 +15,13 @@ const AuthContext = createContext<AuthState>({
   isLoading: true,
   sessionToken: null,
   login: async () => ({ ok: false }),
-  logout: () => {},
+  logout: () => { },
   getToken: () => null,
 })
 
 const STORAGE_KEY = 'wa_dealer_auth_token'
 
-function enterDemoMode(setSessionToken: (t: string) => void): { ok: boolean } {
-  const demoToken = `demo_${Date.now()}_${Math.random().toString(36).slice(2)}`
-  localStorage.setItem(STORAGE_KEY, demoToken)
-  localStorage.setItem('wa_dealer_demo_mode', '1')
-  setSessionToken(demoToken)
-  return { ok: true }
-}
+// No demo mode — always require real backend connection
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [sessionToken, setSessionToken] = useState<string | null>(null)
@@ -41,12 +35,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       return
     }
 
-    // If we're in demo mode, just accept the stored token immediately
-    if (localStorage.getItem('wa_dealer_demo_mode') === '1') {
-      setSessionToken(stored)
-      setIsLoading(false)
-      return
-    }
+    // Clear any stale demo mode flags
+    localStorage.removeItem('wa_dealer_demo_mode')
 
     // Verify token with backend
     fetch('/api/auth/verify', {
@@ -77,9 +67,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         body: JSON.stringify({ token: inviteToken }),
       })
     } catch (_e) {
-      // Network error — backend completely unreachable → demo mode
       void _e
-      return enterDemoMode(setSessionToken)
+      return { ok: false, error: 'Сервер недоступен. Проверь подключение.' }
     }
 
     // Step 2: Check if response is JSON (not Vercel's HTML error page)
@@ -88,9 +77,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       const text = await res.text()
       data = JSON.parse(text)
     } catch (_e) {
-      // Response is HTML or garbage — backend is not there → demo mode
       void _e
-      return enterDemoMode(setSessionToken)
+      return { ok: false, error: 'Сервер вернул невалидный ответ' }
     }
 
     // Step 3: Backend responded with JSON — check if login was successful
@@ -114,7 +102,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       fetch('/api/auth/logout', {
         method: 'POST',
         headers: { 'Authorization': `Bearer ${token}` },
-      }).catch(() => {})
+      }).catch(() => { })
     }
     localStorage.removeItem(STORAGE_KEY)
     localStorage.removeItem('wa_dealer_demo_mode')

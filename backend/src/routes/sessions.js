@@ -85,8 +85,8 @@ export default async function sessionRoutes(fastify) {
     if (!session) return reply.code(404).send({ error: 'Сессия не найдена' })
     if (session.status === 'online') return reply.code(400).send({ error: 'Сессия уже онлайн' })
     try {
-      await session.startWithPairingCode()
-      return reply.send({ ok: true, message: 'Код запрошен — ожидай по WebSocket' })
+      const code = await session.startWithPairingCode()
+      return reply.send({ ok: true, code, message: `Код привязки: ${code}. Введи в WhatsApp → Настройки → Связанные устройства → Привязать по номеру` })
     } catch (err) {
       return reply.code(500).send({ error: err.message })
     }

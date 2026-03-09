@@ -15,11 +15,20 @@ const CHAT_MODEL = process.env.AI_CHAT_MODEL || 'gpt-4o'
 /** Model for data extraction */
 const EXTRACT_MODEL = process.env.AI_EXTRACT_MODEL || 'gpt-4o'
 
-/** Max follow-up messages we send (excluding the initial campaign message) */
-const MAX_FOLLOWUPS = 6
+/** Max follow-up messages we send per conversation (excluding the initial campaign message) */
+const MAX_FOLLOWUPS = 15
 
-/** Categories we extract */
-const CATEGORIES = ['location', 'price', 'availability', 'nationality', 'photos', 'services']
+/** ALL required fields — the 7 MUST-HAVE fields + video */
+const CATEGORIES = [
+  'address',        // exact address (street + number + city)
+  'city',           // city name
+  'prices',         // price list with durations
+  'nationality',    // nationality/ethnicity
+  'incall_outcall', // к себе / по вызову / оба
+  'independent',    // индивидуалка или агентство
+  'photos',         // real photos (3+)
+  'video',          // at least 1 real video
+]
 
 /**
  * Build token-limit param compatible with both GPT-4o (max_tokens) and GPT-5.x (max_completion_tokens).
@@ -34,77 +43,162 @@ function tokenLimitParam(model, limit) {
 
 // ─── System prompt — structured analysis approach ───────────────────────────
 
-const SYSTEM_PROMPT = `You are a REAL GUY — a confident, warm, slightly flirty male client chatting with a girl on WhatsApp after seeing her escort ad.
-You're genuinely interested in her. You text like a real man — short, warm, with compliments and light flirting. NOT like a robot asking dry questions.
+const SYSTEM_PROMPT = `You are a REAL GUY chatting with a girl on WhatsApp. You saw her ad and you're interested. You text like a normal man — short, warm, flirty.
 
-## YOUR PERSONALITY:
-- Warm and charming — use pet names: "מותק" (motek), "יפה" (yafa), "красотка", "sweetie", "babe"
-- React to photos with genuine excitement: "ואוו את ממש יפה 😍", "горячая 🔥", "wow you look amazing"
-- Thank her warmly: "תודה מותק", "спасибо красотка"
-- Light flirting: "can't wait to see you", "אני כבר מתרגש", "ты просто огонь"
-- Mix your question INTO a warm message, don't just ask dry questions
-- Sound like a real horny guy who's excited, not a surveyor filling out a form
+## 7 MUST-HAVE FIELDS (collect ALL before stopping):
+1. ADDRESS — exact address (street + number + city), NOT just "Tel Aviv"
+2. PRICE — price list (30min, 1h, 2h, night)
+3. CITY — which city she works in
+4. NATIONALITY — ethnicity (Brazilian, Russian, Israeli, etc.)
+5. INCALL/OUTCALL — к себе (at her place), по вызову (comes to you), or both
+6. INDEPENDENT/AGENCY — works alone (индивидуалка) or with an agency
+7. PHOTOS — she must send at least 3 real photos
 
-## EXAMPLES OF GOOD vs BAD:
-❌ BAD (robot): "what is your location?"
-✅ GOOD: "את באיזה אזור מותק?"
-❌ BAD: "how much for an hour?"
-✅ GOOD: "כמה לשעה יפה שלי?"
-❌ BAD: "can you send a photo?"
-✅ GOOD: "יש לך עוד תמונות? 😏"
-❌ BAD (on receiving photos): "nice, what area are you in?"
-✅ GOOD: "ואוו את חתיכה רצינית 🔥 איפה את נמצאת?"
-❌ BAD: "are you free tonight?"
-✅ GOOD: "פנויה הלילה מותק? הייתי שמח לבוא"
+## BONUS — TRY TO GET:
+8. VIDEO — ask for at least 1 short video ("можешь скинуть короткое видео?")
 
-## BEFORE YOU REPLY — MANDATORY ANALYSIS
+## CRITICAL RULES:
+- MATCH HER LANGUAGE. She writes Hebrew → reply Hebrew. Russian → Russian. English → English.
+- Sound like a REAL CLIENT, not a robot or a survey. Be warm, flirty, use pet names natural to the conversation language.
+- Hebrew: "מותק", "יפה שלי", "את נשמעת מדהימה"
+- Russian: "малышка", "милашка", "красивая", "зай"
+- English: "babe", "sweetie", "gorgeous"
+- 1-2 SHORT sentences max. Like a real WhatsApp text, not an essay.
+- ALWAYS wrap your question inside a warm/flirty message. Never a dry question alone.
+- If she sent photos/video → compliment FIRST, then ask next missing field.
+- NEVER repeat a question you already asked.
+- NEVER reveal you're a bot/AI.
 
-Read the ENTIRE conversation. For each category, check if she ALREADY provided info:
-- location: city, area, neighborhood, or address
-- price: any mention of cost
-- availability: when she can meet
-- nationality: where she's from
-- photos: did she send photos/videos/media (look for "[MEDIA]" tags)
-- services: what she offers
+## BEFORE YOU REPLY — ANALYZE:
 
-## DECISION LOGIC
+Check what she already provided:
+- address: exact address (street+number+city) or null
+- city: city name or null
+- prices: price list or null
+- nationality: ethnicity or null
+- incall_outcall: "incall"/"outcall"/"both" or null
+- independent: "independent"/"agency" or null
+- photos: count of photos she sent (look for "[media:" or "[MEDIA]" tags) or 0
+- video: did she send video (look for "[media:video" tags) or false
 
-Return JSON:
+## RESPONSE FORMAT — JSON only:
 {
   "analysis": {
-    "location": "<what she said or null>",
-    "price": "<what she said or null>",
-    "availability": "<what she said or null>",
-    "nationality": "<what she said or null>",
-    "photos": "<sent/offered/not yet>",
-    "services": "<what she said or null>"
+    "address": "<value or null>",
+    "city": "<value or null>",
+    "prices": "<value or null>",
+    "nationality": "<value or null>",
+    "incall_outcall": "<incall/outcall/both or null>",
+    "independent": "<independent/agency or null>",
+    "photos": "<count or 0>",
+    "video": "<true/false>"
   },
-  "filled": <number of non-null fields>,
-  "questions_i_asked": ["topics I already asked about"],
-  "duplicates_found": <true if I sent same message twice>,
-  "her_last_message_answered": "<topic or 'unrelated'>",
-  "should_stop": <true/false>,
-  "stop_reason": "<why or null>",
-  "reply": "<your message or NULL>"
+  "filled": <number of non-null fields out of 7 essentials>,
+  "next_missing": "<most important missing field>",
+  "should_stop": false,
+  "reply": "<your message in HER language>"
 }
 
-## WHEN TO STOP (should_stop=true, reply=NULL):
-- filled >= 4 → enough data, say something warm like "תודה מותק, נתראה 😘" then STOP
-- 5+ follow-up messages sent → STOP
-- Duplicate messages in history → STOP
-- She's angry/rude/ignoring → STOP
-- She gave 3+ data points at once → warm "thanks beautiful" then STOP
+## WHEN TO STOP (should_stop=true, reply=null):
+- filled >= 7 (all essential data collected) → warm goodbye
+- 12+ follow-ups and she stopped giving info → STOP
+- She's angry / blocked / says go away → STOP
+- Duplicate messages detected → STOP
 
-## REPLY RULES:
-- 1-2 short sentences MAX (like real WhatsApp texting)
-- Match her language EXACTLY (Hebrew → Hebrew, Russian → Russian, English → English)
-- ALWAYS include warmth/flirtiness — never a dry question alone
-- If she sent photos/media → ALWAYS compliment first ("ואוו 🔥", "hot 😍") before asking anything
-- If she gave info → acknowledge warmly BEFORE asking next thing ("nice motek, and how much?")
-- NEVER repeat a question (check questions_i_asked)
-- NEVER ask what she already told you (check analysis)
-- NEVER reveal you're AI/bot
-- NEVER use formal language — be casual, short, real`
+## DO NOT STOP if filled < 7. KEEP ASKING about next_missing.
+- City but no exact address? → "а точный адрес можешь скинуть?"
+- Only 1h price? → "а на полчаса/два часа сколько?"
+- No photos yet? → "скинь пару фоток, хочу посмотреть на тебя 😏"
+- Got photos but no video? → "а видео есть? хоть коротенькое"
+- Didn't say incall/outcall? → "ты принимаешь или выезжаешь?"
+- Didn't say independent/agency? → ask naturally if she works alone`
+
+// ─── Fallback messages when AI model refuses to reply ─────────────────────────
+
+const FALLBACK_MESSAGES = {
+  address: {
+    he: ['מותק, מה הכתובת המדויקת שלך? 😘', 'יפה שלי, איפה בדיוק את? רחוב ומספר?'],
+    ru: ['Малышка, а точный адрес можешь скинуть? 😘', 'Красивая, а где ты находишься? Улица и номер дома?'],
+    en: ['Babe, what\'s your exact address? 😘', 'Sweetie, where exactly are you located? Street and number?'],
+  },
+  city: {
+    he: ['באיזה עיר את מותק? 😊', 'את באיזה אזור יפה שלי?'],
+    ru: ['А в каком городе ты, милашка? 😊', 'Красивая, в каком ты городе?'],
+    en: ['Which city are you in, gorgeous? 😊', 'What city are you based in, sweetie?'],
+  },
+  prices: {
+    he: ['מה המחירים שלך מותק? לחצי שעה, שעה? 😘', 'כמה לשעה יפה שלי?'],
+    ru: ['А сколько стоит, малышка? За полчаса, час? 😘', 'Красивая, какие цены?'],
+    en: ['What are your prices, babe? For 30min, 1h? 😘', 'How much for an hour, gorgeous?'],
+  },
+  nationality: {
+    he: ['מאיפה את מותק? 😊', 'את מקומית או מחו"ל יפה שלי?'],
+    ru: ['Откуда ты родом, малышка? 😊', 'А какой ты национальности, красивая?'],
+    en: ['Where are you from originally, babe? 😊', 'What\'s your nationality, gorgeous?'],
+  },
+  incall_outcall: {
+    he: ['את מקבלת אצלך או יוצאת מותק? 😘', 'יש אפשרות גם לצאת אליי?'],
+    ru: ['Ты принимаешь у себя или выезжаешь, милашка? 😘', 'К тебе или по вызову, красивая?'],
+    en: ['Do you host or travel, sweetie? 😘', 'Incall or outcall, babe?'],
+  },
+  independent: {
+    he: ['את עובדת לבד מותק? 😊', 'את עצמאית או עם סוכנות יפה שלי?'],
+    ru: ['Ты работаешь сама, малышка? 😊', 'Ты индивидуалка или через агентство?'],
+    en: ['Do you work independently, babe? 😊', 'Are you independent or with an agency, sweetie?'],
+  },
+  photos: {
+    he: ['יש לך תמונות לשלוח מותק? רוצה לראות אותך 😏', 'שלחי לי כמה תמונות יפה שלי 📷'],
+    ru: ['Скинь пару фоток, хочу посмотреть на тебя 😏', 'Малышка, есть фото? 📷'],
+    en: ['Can you send me some photos, gorgeous? 😏', 'I\'d love to see some pics of you, babe 📷'],
+  },
+  video: {
+    he: ['יש לך סרטון קצר מותק? 😏', 'את יכולה לשלוח וידאו קצר יפה שלי?'],
+    ru: ['А видео есть? Хоть коротенькое, малышка 😏', 'Можешь скинуть короткое видео, красивая?'],
+    en: ['Got a short video, babe? 😏', 'Can you send a quick video, gorgeous?'],
+  },
+}
+
+/**
+ * Detect conversation language from last inbound messages.
+ */
+function _detectLanguage(history) {
+  const inbound = history.filter(m => m.direction === 'inbound').map(m => m.body || '')
+  const text = inbound.slice(-3).join(' ')
+  // Hebrew characters
+  if (/[\u0590-\u05FF]/.test(text)) return 'he'
+  // Russian characters
+  if (/[\u0400-\u04FF]/.test(text)) return 'ru'
+  return 'en'
+}
+
+/**
+ * Build a fallback message when AI model refuses to continue but fields are missing.
+ */
+function _buildFallbackMessage(nextMissing, analysis, history) {
+  const lang = _detectLanguage(history)
+  const field = nextMissing || _findFirstMissing(analysis)
+  const templates = FALLBACK_MESSAGES[field]
+  if (!templates) return null
+  const msgs = templates[lang] || templates.en
+  return msgs[Math.floor(Math.random() * msgs.length)]
+}
+
+function _findFirstMissing(analysis) {
+  if (!analysis) return 'prices'
+  const checks = [
+    ['address', v => v && v !== 'null'],
+    ['city', v => v && v !== 'null'],
+    ['prices', v => v && v !== 'null'],
+    ['nationality', v => v && v !== 'null'],
+    ['incall_outcall', v => v && v !== 'null'],
+    ['independent', v => v && v !== 'null'],
+    ['photos', v => v && v !== '0' && v !== 0 && v !== 'not yet'],
+  ]
+  for (const [field, check] of checks) {
+    if (!check(analysis[field])) return field
+  }
+  return 'video' // all 7 filled, try bonus
+}
 
 // ─── Generate next auto-reply ─────────────────────────────────────────────────
 
@@ -178,19 +272,47 @@ export async function generateAutoReply(history) {
       return null
     }
 
+    // ── Debug: log AI decision ──────────────────────────────────────────
+    console.log(`[AI] filled=${parsed.filled}/7 stop=${parsed.should_stop} next=${parsed.next_missing} reply="${(parsed.reply || 'NULL').substring(0, 60)}"`)
+
     // ── Validate structured response ─────────────────────────────────────
     const reply = parsed.reply?.trim()
 
-    // Model decided to stop
-    if (!reply || reply === 'NULL' || reply.toUpperCase() === 'NULL' || parsed.should_stop) {
+    // ONLY stop when ALL 7 essential fields collected — IGNORE model's should_stop if filled < 7
+    if (parsed.filled >= 7) {
+      console.log(`[AI] ALL 7 fields collected — stopping`)
       return null
     }
 
-    // Safety: if model says 4+ fields collected, stop regardless
-    if (parsed.filled >= 4) return null
+    // Model says stop OR gave no reply, but we don't have 7 fields — generate fallback
+    const noReply = !reply || reply === 'NULL' || reply.toUpperCase() === 'NULL'
+    if ((parsed.should_stop || noReply) && parsed.filled < 7) {
+      console.log(`[AI] Model wants to stop but only ${parsed.filled}/7 filled — generating fallback for: ${parsed.next_missing}`)
+      let fallback = _buildFallbackMessage(parsed.next_missing, parsed.analysis, history)
+      if (fallback) {
+        // Check this fallback isn't a duplicate of a message we already sent
+        const fbLower = fallback.toLowerCase().trim()
+        const isDupe = ourMessages.some(m => m.body?.toLowerCase().trim() === fbLower)
+        if (!isDupe) return fallback
+        // Try another field if this one's a dupe
+        const allFields = ['address', 'city', 'prices', 'nationality', 'incall_outcall', 'independent', 'photos', 'video']
+        for (const f of allFields) {
+          if (f === parsed.next_missing) continue
+          fallback = _buildFallbackMessage(f, parsed.analysis, history)
+          if (fallback && !ourMessages.some(m => m.body?.toLowerCase().trim() === fallback.toLowerCase().trim())) {
+            return fallback
+          }
+        }
+      }
+      // All fallbacks exhausted — return null (but orchestrator won't mark as done)
+      return null
+    }
 
-    // Safety: if duplicates found, stop
-    if (parsed.duplicates_found) return null
+    // No reply at all and 7+ fields
+    if (noReply) {
+      console.log(`[AI] No reply provided — stopping`)
+      return null
+    }
 
     // Safety: reply must not match any of our previous messages (exact OR fuzzy)
     const replyLower = reply.toLowerCase().trim()
@@ -203,13 +325,17 @@ export async function generateAutoReply(history) {
         console.log('[AI-Responder] Reply matches a previous message (exact), blocking')
         return null
       }
-      // Fuzzy match: if 70%+ of words overlap → same question rephrased
-      const prevWords = new Set(prev.replace(/[?!.,]/g, '').split(/\s+/).filter(w => w.length > 2))
-      if (replyWords.size >= 2 && prevWords.size >= 2) {
-        const overlap = [...replyWords].filter(w => prevWords.has(w)).length
-        const similarity = overlap / Math.max(replyWords.size, prevWords.size)
-        if (similarity >= 0.7) {
+      // Fuzzy match: if 85%+ of words overlap → same question rephrased
+      const prevWords = new Set(prev.replace(/[?!.,]/g, '').split(/\s+/).filter(w => w.length > 3))
+      const replyWordsLong = new Set(replyLower.replace(/[?!.,]/g, '').split(/\s+/).filter(w => w.length > 3))
+      if (replyWordsLong.size >= 3 && prevWords.size >= 3) {
+        const overlap = [...replyWordsLong].filter(w => prevWords.has(w)).length
+        const similarity = overlap / Math.max(replyWordsLong.size, prevWords.size)
+        if (similarity >= 0.85) {
           console.log(`[AI-Responder] Reply too similar to previous (${(similarity * 100).toFixed(0)}%): "${prev.substring(0, 40)}" vs "${replyLower.substring(0, 40)}"`)
+          // Instead of returning null, try fallback
+          const fallback = _buildFallbackMessage(null, null, history)
+          if (fallback) return fallback
           return null
         }
       }
@@ -222,6 +348,10 @@ export async function generateAutoReply(history) {
     return cleaned
   } catch (err) {
     console.error('[AI-Responder] Error:', err.message)
+    // 429 = quota exceeded — throw so orchestrator knows NOT to mark as done
+    if (err.status === 429 || err.message?.includes('429')) {
+      throw err
+    }
     return null
   }
 }
@@ -250,26 +380,36 @@ export async function extractConversationData(history) {
       model: EXTRACT_MODEL,
       messages: [{
         role: 'user',
-        content: `Extract structured data from this escort inquiry conversation.
+        content: `Extract structured data from this conversation for a directory profile.
 
 CONVERSATION:
 ${transcript}
 
-Extract these fields (use null if not mentioned or unclear):
-- location: city/neighborhood/area/address where she works (string or null)
-- price: price info as stated by her (string like "500 ILS/hour" or null)
-- availability: when she's available (string or null)
-- nationality: her nationality/origin (string or null)
-- has_photos: did she send or offer photos/media (true/false/null)
-- services: what services she offers (brief string or null)
-- language: main language of conversation ("hebrew"/"russian"/"english"/"other")
+Extract these fields (null if not mentioned):
+- address: EXACT address (street + number + city) (string or null)
+- city: city name (string or null)
+- price_text: full price list as stated e.g. "30min: 500, 1h: 800" (string or null)
+- price_min: minimum price in ILS (number or null)
+- price_max: maximum price in ILS (number or null)
+- nationality: nationality/ethnicity (string or null)
+- incall_outcall: "incall" / "outcall" / "both" (string or null)
+- independent_or_agency: "independent" / "agency" (string or null)
+- has_photos: did she send photos (true/false)
+- photos_count: how many photos sent (number)
+- has_video: did she send video (true/false)
+- age: her age (number or null)
+- services: array of services (array or null)
+- availability: working hours (string or null)
+- languages: languages spoken (array or null)
+- language: conversation language ("hebrew"/"russian"/"english"/"other")
 - sentiment: her attitude ("positive"/"neutral"/"negative"/"unresponsive")
+- completeness: "HOT" if 6+ of 7 essentials filled, "WARM" if 3-5, "COLD" if less
 
-Respond with ONLY valid JSON, no markdown.`,
+Respond with ONLY valid JSON.`,
       }],
       response_format: { type: 'json_object' },
       temperature: 0.2,
-      ...tokenLimitParam(EXTRACT_MODEL, 400),
+      ...tokenLimitParam(EXTRACT_MODEL, 800),
     })
 
     return JSON.parse(response.choices[0].message.content)
@@ -277,4 +417,57 @@ Respond with ONLY valid JSON, no markdown.`,
     console.error('[AI-Responder] Extraction error:', err.message)
     return null
   }
+}
+
+// ─── Score calculator (0-100) ──────────────────────────────────────────────────
+
+/**
+ * Calculate a numeric score 0-100 from extracted conversation data.
+ * No API calls — pure calculation from already-extracted fields.
+ *
+ * Weights:
+ *   address: 15, city: 10, prices: 15, nationality: 8,
+ *   incall_outcall: 8, independent: 8, photos: 12,
+ *   video: 5, age: 3, services: 3, availability: 3,
+ *   sentiment: 5, multiple_prices: 5
+ */
+export function calculateScore(data) {
+  if (!data || typeof data !== 'object') return 0
+  let score = 0
+
+  const filled = (v) => v && v !== 'null' && v !== null && v !== 'N/A' && v !== 'unknown'
+
+  // 7 essential fields (76 points total)
+  if (filled(data.address) || filled(data.location)) score += 15
+  if (filled(data.city)) score += 10
+  if (filled(data.price_text) || filled(data.price) || filled(data.price_min)) score += 15
+  if (filled(data.nationality)) score += 8
+  if (filled(data.incall_outcall)) score += 8
+  if (filled(data.independent_or_agency) || filled(data.independent)) score += 8
+  if (data.has_photos === true || (data.photos_count && data.photos_count > 0)) score += 12
+
+  // Bonus fields (24 points total)
+  if (data.has_video === true) score += 5
+  if (filled(data.age)) score += 3
+  if (Array.isArray(data.services) && data.services.length > 0) score += 3
+  if (filled(data.availability)) score += 3
+  if (data.sentiment === 'positive') score += 5
+
+  // Multiple prices bonus (has comma, semicolon, or multiple numbers)
+  const priceStr = String(data.price_text || data.price || '')
+  if (priceStr && (priceStr.includes(',') || priceStr.includes(';') || priceStr.includes('\n') || (priceStr.match(/\d+/g) || []).length >= 2)) {
+    score += 5
+  }
+
+  return Math.min(score, 100)
+}
+
+/**
+ * Get score category from numeric score.
+ */
+export function scoreCategory(num) {
+  if (num >= 80) return 'hot'
+  if (num >= 50) return 'warm'
+  if (num >= 20) return 'cold'
+  return 'irrelevant'
 }

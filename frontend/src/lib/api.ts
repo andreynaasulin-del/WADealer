@@ -65,7 +65,7 @@ export const api = {
     qr: (phone: string) =>
       req<{ qrCode: string } | null>(`/sessions/${encodeURIComponent(phone)}/qr`),
     pairingCode: (phone: string) =>
-      req<{ ok: boolean; message: string }>(`/sessions/${encodeURIComponent(phone)}/pairing-code`, { method: 'POST', body: '{}' }),
+      req<{ ok: boolean; code?: string; message: string }>(`/sessions/${encodeURIComponent(phone)}/pairing-code`, { method: 'POST', body: '{}' }),
     send: (phone: string, to: string, text: string) =>
       req<{ ok: boolean; to: string; from: string }>(`/sessions/${encodeURIComponent(phone)}/send`, {
         method: 'POST', body: JSON.stringify({ to, text }),
@@ -101,6 +101,15 @@ export const api = {
         method: 'POST',
         body: JSON.stringify({ campaign_id, phones }),
       }),
+    batchScore: () =>
+      req<{ ok: boolean; total: number; scored: number; errors: number; skipped: number }>('/leads/batch-score', {
+        method: 'POST',
+        body: '{}',
+      }),
+    feed: (minScore = 20, limit = 200) =>
+      req<{ ok: boolean; total: number; returned: number; leads: FeedLead[] }>(
+        `/leads/feed?min_score=${minScore}&limit=${limit}`
+      ),
   },
 
   stats: {
@@ -328,6 +337,26 @@ export interface TelegramStats {
   errors: number
   queue_status?: string
   queue_size?: number
+}
+
+export interface FeedLead {
+  phone: string
+  score: number
+  category: 'HOT' | 'WARM' | 'COLD' | 'IRRELEVANT'
+  city: string | null
+  address: string | null
+  price_text: string | null
+  price_min: number | null
+  price_max: number | null
+  nationality: string | null
+  incall_outcall: string | null
+  independent_or_agency: string | null
+  has_photos: boolean
+  has_video: boolean
+  age: number | null
+  services: string[] | null
+  availability: string | null
+  sentiment: string | null
 }
 
 // ─── CRM Types ──────────────────────────────────────────────────────────────

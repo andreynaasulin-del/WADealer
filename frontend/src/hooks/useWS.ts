@@ -1,10 +1,24 @@
 'use client'
 import { useEffect, useRef, useCallback } from 'react'
 
-const WS_BASE =
-  typeof window !== 'undefined'
-    ? (process.env.NEXT_PUBLIC_BACKEND_WS_URL || 'ws://localhost:3001/ws')
-    : ''
+function getWSBase(): string {
+  if (typeof window === 'undefined') return ''
+
+  // 1. Explicit WS URL env var
+  const explicit = (process.env.NEXT_PUBLIC_BACKEND_WS_URL || '').trim()
+  if (explicit.startsWith('ws')) return explicit
+
+  // 2. Derive from backend URL env var
+  const backend = (process.env.NEXT_PUBLIC_BACKEND_URL || '').trim()
+  if (backend.startsWith('http')) {
+    return backend.replace(/^https:/, 'wss:').replace(/^http:/, 'ws:') + '/ws'
+  }
+
+  // 3. Fallback to localhost for local dev
+  return 'ws://localhost:3001/ws'
+}
+
+const WS_BASE = getWSBase()
 
 const AUTH_STORAGE_KEY = 'wa_dealer_auth_token'
 
@@ -47,7 +61,7 @@ export function useWS(onMessage: (event: WSEvent) => void) {
       wsRef.current = ws
 
       ws.onopen = () => {
-        console.log('[WS] Connected')
+        console.log('[WS] Connected to', WS_BASE.split('?')[0])
         attemptsRef.current = 0
         if (timerRef.current) { clearTimeout(timerRef.current); timerRef.current = null }
       }

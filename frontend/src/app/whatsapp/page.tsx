@@ -10,29 +10,31 @@ import StatsBar from '@/components/StatsBar'
 import QuickSend from '@/components/QuickSend'
 import CRMPanel from '@/components/CRMPanel'
 import AIChat from '@/components/AIChat'
+import LeadsFeed from '@/components/LeadsFeed'
 
 const MAX_LOGS = 500
 
 export default function WhatsAppDashboard() {
   const { isAuthenticated, isLoading, logout } = useAuth()
 
-  const [sessions, setSessions]             = useState<Session[]>([])
-  const [campaigns, setCampaigns]           = useState<Campaign[]>([])
-  const [stats, setStats]                   = useState<Stats | null>(null)
-  const [logs, setLogs]                     = useState<LogEntry[]>([])
-  const [queueStatus, setQueueStatus]       = useState('stopped')
-  const [connected, setConnected]           = useState(false)
-  const [time, setTime]                     = useState('')
-  const [selectedPhone, setSelectedPhone]   = useState<string | null>(null)
+  const [sessions, setSessions] = useState<Session[]>([])
+  const [campaigns, setCampaigns] = useState<Campaign[]>([])
+  const [stats, setStats] = useState<Stats | null>(null)
+  const [logs, setLogs] = useState<LogEntry[]>([])
+  const [queueStatus, setQueueStatus] = useState('stopped')
+  const [connected, setConnected] = useState(false)
+  const [time, setTime] = useState('')
+  const [selectedPhone, setSelectedPhone] = useState<string | null>(null)
 
-  const [showAdmin, setShowAdmin]           = useState(false)
-  const [invites, setInvites]               = useState<InviteToken[]>([])
+  const [showAdmin, setShowAdmin] = useState(false)
+  const [invites, setInvites] = useState<InviteToken[]>([])
   const [generatingInvite, setGeneratingInvite] = useState(false)
-  const [copiedToken, setCopiedToken]       = useState<string | null>(null)
-  const [showCRM, setShowCRM]               = useState(false)
-  const [showAI, setShowAI]                 = useState(false)
-  const [demoMode, setDemoMode]             = useState(false)
-  const [pairingCodes, setPairingCodes]     = useState<Record<string, string>>({})
+  const [copiedToken, setCopiedToken] = useState<string | null>(null)
+  const [showCRM, setShowCRM] = useState(false)
+  const [showAI, setShowAI] = useState(false)
+  const [showLeads, setShowLeads] = useState(false)
+  const [demoMode, setDemoMode] = useState(false)
+  const [pairingCodes, setPairingCodes] = useState<Record<string, string>>({})
 
   useEffect(() => {
     if (typeof window !== 'undefined') setDemoMode(localStorage.getItem('wa_dealer_demo_mode') === '1')
@@ -50,11 +52,11 @@ export default function WhatsAppDashboard() {
   }, [])
 
   const loadSessions = useCallback(async () => {
-    try { setSessions(await api.sessions.list()) } catch (_) {}
+    try { setSessions(await api.sessions.list()) } catch (_) { }
   }, [])
 
   const loadCampaigns = useCallback(async () => {
-    try { setCampaigns(await api.campaigns.list()) } catch (_) {}
+    try { setCampaigns(await api.campaigns.list()) } catch (_) { }
   }, [])
 
   const loadStats = useCallback(async () => {
@@ -62,11 +64,11 @@ export default function WhatsAppDashboard() {
       const s = await api.stats.get()
       setStats(s)
       setQueueStatus(s.queue_status)
-    } catch (_) {}
+    } catch (_) { }
   }, [])
 
   const loadInvites = useCallback(async () => {
-    try { setInvites(await api.auth.listInvites()) } catch (_) {}
+    try { setInvites(await api.auth.listInvites()) } catch (_) { }
   }, [])
 
   useEffect(() => {
@@ -74,7 +76,11 @@ export default function WhatsAppDashboard() {
     loadSessions()
     loadCampaigns()
     loadStats()
-    const timer = setInterval(() => { loadStats(); loadCampaigns() }, 15_000)
+    const timer = setInterval(() => {
+      loadStats()
+      loadCampaigns()
+      loadSessions()
+    }, 3_000)
     return () => clearInterval(timer)
   }, [loadSessions, loadCampaigns, loadStats, isAuthenticated])
 
@@ -106,9 +112,12 @@ export default function WhatsAppDashboard() {
       case 'session_created': loadSessions(); break
       case 'session_deleted': setSessions(prev => prev.filter(s => s.phone !== event.phone)); break
       case 'pairing_code': {
-        const { session: phone, code } = event as unknown as { session: string; code: string }
-        setPairingCodes(prev => ({ ...prev, [phone]: code }))
-        setSessions(prev => prev.map(s => s.phone === phone ? { ...s, status: 'pairing_pending' as Session['status'] } : s))
+        const raw = event as unknown as { session?: string; phone?: string; code: string }
+        const pPhone = raw.phone || raw.session || ''
+        if (pPhone && raw.code) {
+          setPairingCodes(prev => ({ ...prev, [pPhone]: raw.code }))
+          setSessions(prev => prev.map(s => s.phone === pPhone ? { ...s, status: 'pairing_pending' as Session['status'] } : s))
+        }
         break
       }
       case 'qr': {
@@ -134,12 +143,12 @@ export default function WhatsAppDashboard() {
 
   async function generateInvite() {
     setGeneratingInvite(true)
-    try { const invite = await api.auth.generateInvite(); setInvites(prev => [invite, ...prev]) } catch (_) {}
+    try { const invite = await api.auth.generateInvite(); setInvites(prev => [invite, ...prev]) } catch (_) { }
     setGeneratingInvite(false)
   }
 
   async function deleteInvite(id: string) {
-    try { await api.auth.deleteInvite(id); setInvites(prev => prev.filter(i => i.id !== id)) } catch (_) {}
+    try { await api.auth.deleteInvite(id); setInvites(prev => prev.filter(i => i.id !== id)) } catch (_) { }
   }
 
   function copyInviteLink(token: string) {
@@ -186,23 +195,32 @@ export default function WhatsAppDashboard() {
           {/* CRM toggle */}
           <button
             onClick={() => setShowCRM(!showCRM)}
-            className={`text-[10px] sm:text-xs px-1.5 sm:px-2.5 py-1 rounded border transition-colors cursor-pointer font-medium ${
-              showCRM
+            className={`text-[10px] sm:text-xs px-1.5 sm:px-2.5 py-1 rounded border transition-colors cursor-pointer font-medium ${showCRM
                 ? 'bg-green-900/40 text-green-400 border-green-700'
                 : 'text-[#7d8590] border-[#30363d] hover:text-[#e6edf3] hover:border-[#484f58]'
-            }`}
+              }`}
           >
             {showCRM ? '✕' : '💬'}<span className="hidden sm:inline"> CRM</span>
+          </button>
+
+          {/* Leads Feed toggle */}
+          <button
+            onClick={() => setShowLeads(!showLeads)}
+            className={`text-[10px] sm:text-xs px-1.5 sm:px-2.5 py-1 rounded border transition-colors cursor-pointer font-medium ${showLeads
+                ? 'bg-red-900/40 text-red-400 border-red-700'
+                : 'text-[#7d8590] border-[#30363d] hover:text-[#e6edf3] hover:border-[#484f58]'
+              }`}
+          >
+            {showLeads ? '✕' : '📊'}<span className="hidden sm:inline"> Leads</span>
           </button>
 
           {/* AI Chat toggle */}
           <button
             onClick={() => setShowAI(!showAI)}
-            className={`text-[10px] sm:text-xs px-1.5 sm:px-2.5 py-1 rounded border transition-colors cursor-pointer font-medium ${
-              showAI
+            className={`text-[10px] sm:text-xs px-1.5 sm:px-2.5 py-1 rounded border transition-colors cursor-pointer font-medium ${showAI
                 ? 'bg-purple-900/40 text-purple-400 border-purple-700'
                 : 'text-[#7d8590] border-[#30363d] hover:text-[#e6edf3] hover:border-[#484f58]'
-            }`}
+              }`}
           >
             {showAI ? '✕' : '🤖'}<span className="hidden sm:inline"> AI</span>
           </button>
@@ -210,11 +228,10 @@ export default function WhatsAppDashboard() {
           {/* Admin toggle */}
           <button
             onClick={toggleAdmin}
-            className={`text-[10px] sm:text-xs px-1.5 sm:px-2.5 py-1 rounded border transition-colors cursor-pointer font-medium ${
-              showAdmin
+            className={`text-[10px] sm:text-xs px-1.5 sm:px-2.5 py-1 rounded border transition-colors cursor-pointer font-medium ${showAdmin
                 ? 'bg-amber-900/40 text-amber-400 border-amber-700'
                 : 'text-[#7d8590] border-[#30363d] hover:text-[#e6edf3] hover:border-[#484f58]'
-            }`}
+              }`}
           >
             {showAdmin ? '✕' : '⚙'}<span className="hidden sm:inline"> Админ</span>
           </button>
@@ -246,9 +263,8 @@ export default function WhatsAppDashboard() {
             ) : (
               <div className="flex flex-col gap-1.5 max-h-48 overflow-y-auto">
                 {invites.map(inv => (
-                  <div key={inv.id} className={`flex items-center gap-2 text-xs px-2 py-1.5 rounded border ${
-                    inv.is_used ? 'border-[#30363d] bg-[#0d1117] text-[#484f58]' : 'border-green-900/50 bg-green-950/20 text-[#e6edf3]'
-                  }`}>
+                  <div key={inv.id} className={`flex items-center gap-2 text-xs px-2 py-1.5 rounded border ${inv.is_used ? 'border-[#30363d] bg-[#0d1117] text-[#484f58]' : 'border-green-900/50 bg-green-950/20 text-[#e6edf3]'
+                    }`}>
                     <span className={`inline-block w-1.5 h-1.5 rounded-full shrink-0 ${inv.is_used ? 'bg-[#484f58]' : 'bg-green-400'}`} />
                     <code className="font-mono text-[10px] bg-[#0d1117] px-1.5 py-0.5 rounded border border-[#30363d] truncate max-w-[200px]">
                       {inv.token.slice(0, 16)}...{inv.token.slice(-8)}
@@ -280,7 +296,7 @@ export default function WhatsAppDashboard() {
           <>
             {/* Mobile: full-screen overlay */}
             <div className="md:hidden fixed inset-0 z-40 bg-[#0d1117] flex flex-col overflow-hidden"
-                 style={{ top: 'var(--header-h, 44px)' }}>
+              style={{ top: 'var(--header-h, 44px)' }}>
               <CRMPanel
                 sessions={sessions}
                 selectedPhone={selectedPhone}
@@ -303,7 +319,7 @@ export default function WhatsAppDashboard() {
           <>
             {/* Mobile: full-screen overlay */}
             <div className="md:hidden fixed inset-0 z-40 bg-[#0d1117] flex flex-col overflow-hidden"
-                 style={{ top: 'var(--header-h, 44px)' }}>
+              style={{ top: 'var(--header-h, 44px)' }}>
               <AIChat
                 campaigns={campaigns}
                 onClose={() => setShowAI(false)}
@@ -325,6 +341,14 @@ export default function WhatsAppDashboard() {
           {/* Stats bar */}
           <StatsBar stats={stats} queueStatus={queueStatus} />
 
+          {/* Leads Feed */}
+          {showLeads && (
+            <LeadsFeed
+              campaignId=""
+              onClose={() => setShowLeads(false)}
+            />
+          )}
+
           {/* Sessions + Campaigns grid */}
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-2 sm:gap-3">
             <div className="bg-[#161b22] border border-[#30363d] rounded-lg p-3 sm:p-4 overflow-y-auto max-h-[360px] sm:max-h-[480px]">
@@ -335,7 +359,8 @@ export default function WhatsAppDashboard() {
                 selectedPhone={selectedPhone}
                 onSelect={setSelectedPhone}
                 pairingCodes={pairingCodes}
-                onPairingCodeUsed={(phone) => setPairingCodes(prev => { const n = {...prev}; delete n[phone]; return n })}
+                onPairingCodeUsed={(phone) => setPairingCodes(prev => { const n = { ...prev }; delete n[phone]; return n })}
+                onPairingCodeReceived={(phone, code) => setPairingCodes(prev => ({ ...prev, [phone]: code }))}
               />
             </div>
             <div className="bg-[#161b22] border border-[#30363d] rounded-lg p-3 sm:p-4 overflow-y-auto max-h-[360px] sm:max-h-[480px]">

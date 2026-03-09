@@ -28,3 +28,24 @@ Thumbs.db
 
 # Vercel
 .vercel/
+
+# Export / analysis scripts & data (local only)
+backend/export_*.mjs
+backend/analyze_*.mjs
+backend/check_*.mjs
+backend/fetch_*.mjs
+backend/get_*.mjs
+backend/send_*.mjs
+backend/generate_*.mjs
+backend/build_*.mjs
+backend/list_*.mjs
+backend/restart_*.mjs
+backend/auto_start_*.mjs
+backend/extract_*.mjs
+backend/scripts/
+backend/*.json
+backend/*.csv
+backend/*.txt
+backend/*.md
+.env.vercel-check
+frontend/.env.vercel.check

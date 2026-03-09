@@ -1,3 +1,5 @@
+import fs from 'fs'
+import path from 'path'
 import { Session } from './session.js'
 import { TelegramSession } from './telegram-session.js'
 import { MessageQueue } from './queue.js'
@@ -40,13 +42,17 @@ export class Orchestrator {
 
     /** Daily send limit per session — { sessionPhone: { count, day } } */
     this._dailySent = new Map()
-    this.DAILY_LIMIT = 30
+    this.DAILY_LIMIT = 45
 
     /** Global LID → Phone map (WhatsApp Linked Devices resolution) */
     this._lidMap = new Map()
 
     /** Per-phone reply lock — prevents concurrent AI replies to same contact */
     this._replyInProgress = new Set()
+
+    /** AI disabled flag — set to true when OpenAI quota exceeded (429) */
+    this._aiDisabled = false
+    this._aiDisabledLoggedAt = 0  // timestamp of last "AI disabled" log
 
     /** Flag to prevent overlapping retry scans */
     this._retryRunning = false
@@ -376,6 +382,16 @@ export class Orchestrator {
    * Only fires if the campaign is running or paused (not stopped).
    */
   async _autoReply(remotePhone, sessionPhone, lead) {
+    // ── AI DISABLED — skip entirely when OpenAI quota exceeded ──────────
+    if (this._aiDisabled) {
+      // Log only once per 5 minutes to avoid spam
+      if (Date.now() - this._aiDisabledLoggedAt > 5 * 60 * 1000) {
+        this._aiDisabledLoggedAt = Date.now()
+        this.log(sessionPhone, `🤖 AI выключен (OpenAI квота). Оплати баланс и перезапусти.`, 'warn')
+      }
+      return
+    }
+
     // ── Per-phone lock — prevent concurrent/duplicate AI replies ──────────
     const phoneKey = remotePhone.replace(/\D/g, '')
     if (this._replyInProgress.has(phoneKey)) {
@@ -392,34 +408,68 @@ export class Orchestrator {
 
     this._replyInProgress.add(phoneKey)
     try {
-      // Check campaign status — only auto-reply if campaign is active
+      // Check campaign exists — AI auto-reply works for ANY campaign status
+      // (stopped/paused campaigns still need to follow up replied leads)
       const campaigns = await db.dbGetAllCampaigns()
       const campaign = campaigns.find(c => c.id === lead.campaign_id)
       if (!campaign) return
-      if (campaign.status === 'stopped') return
 
       // Get full conversation history
-      const messages = await db.dbGetConversationMessages(remotePhone, 100)
-      if (!messages || messages.length < 2) return
+      let messages = await db.dbGetConversationMessages(remotePhone, 100)
+
+      // If no stored messages, bootstrap with campaign template + girl's reply
+      if (!messages || messages.length < 2) {
+        // Find campaign template to create context
+        const campaigns = await db.dbGetAllCampaigns()
+        const campaign2 = campaigns.find(c => c.id === lead.campaign_id)
+        if (!campaign2?.template_text) return
+
+        // Store the original campaign message so future retries have context
+        await this.storeMessage(sessionPhone, remotePhone, 'outbound', campaign2.template_text, null, lead.id)
+
+        // If there's at least 1 inbound message, we can proceed
+        if (!messages || messages.length === 0) return
+
+        // Re-fetch after storing
+        messages = await db.dbGetConversationMessages(remotePhone, 100)
+        if (!messages || messages.length < 2) return
+      }
 
       // Generate next question
       const nextMsg = await generateAutoReply(messages)
       if (!nextMsg) {
-        // AI says conversation is done — mark as completed so retry doesn't keep firing
-        this._aiConversationDone.add(phoneKey)
-        this.log(sessionPhone, `🤖 AI: ${remotePhone} — разговор завершён, извлекаю данные...`)
+        // Extract data to see how many fields we have
         const extracted = await extractConversationData(messages)
         if (extracted && lead.id) {
           await db.dbUpdateLeadAI(lead.id, {
-            ai_score: extracted.sentiment === 'positive' ? 'hot' : 'warm',
+            ai_score: extracted.completeness === 'HOT' ? 'hot' : (extracted.completeness === 'WARM' ? 'warm' : 'cold'),
             ai_reason: JSON.stringify(extracted),
           })
-          this.log(sessionPhone, `📊 Данные: ${JSON.stringify(extracted).substring(0, 120)}...`)
           this.broadcast({
             type: 'ai_data_extracted',
             leadId: lead.id, phone: lead.phone,
             data: extracted,
           })
+
+          // Count how many of the 7 essential fields are filled
+          const essentials = ['address', 'city', 'price_text', 'nationality', 'incall_outcall', 'independent_or_agency', 'has_photos']
+          const filledCount = essentials.filter(f => {
+            const v = extracted[f]
+            return v && v !== 'null' && v !== null && v !== false && v !== 0
+          }).length
+
+          if (filledCount >= 6) {
+            // Enough data — mark as done
+            this._aiConversationDone.add(phoneKey)
+            this.log(sessionPhone, `🤖 AI: ${remotePhone} — данные собраны (${filledCount}/7), завершён`)
+            this.log(sessionPhone, `📊 Данные: ${JSON.stringify(extracted).substring(0, 120)}...`)
+          } else {
+            // Not enough data — DON'T mark as done, let retry pick it up later
+            this.log(sessionPhone, `🤖 AI: ${remotePhone} — только ${filledCount}/7 полей, оставляю для повтора`)
+          }
+        } else {
+          // No data extracted at all — don't mark as done
+          this.log(sessionPhone, `🤖 AI: ${remotePhone} — нет данных, оставляю для повтора`)
         }
         return
       }
@@ -486,14 +536,31 @@ export class Orchestrator {
         }
       }
     } catch (err) {
-      this.log(sessionPhone, `🤖 AI ошибка: ${err.message}`, 'error')
+      // ── Detect OpenAI 429 quota exceeded — disable AI globally ──────
+      if (err.message?.includes('429') || err.status === 429 || err.code === 'rate_limit_exceeded' || err.message?.includes('quota')) {
+        this._aiDisabled = true
+        this._aiDisabledLoggedAt = Date.now()
+        this.log(sessionPhone, `🚫 OpenAI квота исчерпана — AI автоответы ВЫКЛЮЧЕНЫ. Оплати баланс OpenAI и перезапусти сервер.`, 'error')
+        this.broadcast({ type: 'ai_disabled', reason: 'OpenAI 429 quota exceeded' })
+      } else {
+        this.log(sessionPhone, `🤖 AI ошибка: ${err.message}`, 'error')
+      }
     } finally {
       // Always release the lock
       this._replyInProgress.delete(phoneKey)
     }
   }
 
+  /** Re-enable AI auto-replies (call after OpenAI balance is topped up) */
+  enableAI() {
+    this._aiDisabled = false
+    this._aiDisabledLoggedAt = 0
+    this.log('SYSTEM', '✅ AI автоответы ВКЛЮЧЕНЫ', 'info')
+    this.broadcast({ type: 'ai_enabled' })
+  }
+
   async _classifyLead(lead, inboundText, sessionPhone) {
+    if (this._aiDisabled) return  // skip when OpenAI quota exceeded
     try {
       const campaigns = await db.dbGetAllCampaigns()
       const campaign = campaigns.find(c => c.id === lead.campaign_id)
@@ -515,7 +582,15 @@ export class Orchestrator {
         score, reason,
       })
     } catch (err) {
-      this.log(sessionPhone, `AI ошибка: ${err.message}`, 'error')
+      if (err.message?.includes('429') || err.status === 429 || err.message?.includes('quota')) {
+        if (!this._aiDisabled) {
+          this._aiDisabled = true
+          this._aiDisabledLoggedAt = Date.now()
+          this.log(sessionPhone, `🚫 OpenAI квота — AI классификация ВЫКЛЮЧЕНА`, 'error')
+        }
+      } else {
+        this.log(sessionPhone, `AI ошибка: ${err.message}`, 'error')
+      }
     }
   }
 
@@ -595,28 +670,59 @@ export class Orchestrator {
       const leads = await db.dbGetRepliedLeads()
       if (leads.length === 0) return
 
+      // Stats for this cycle
       let retried = 0
+      let skippedDone = 0, skippedCooldown = 0, skippedNoMsgs = 0, skippedOutbound = 0, skippedDupes = 0, skippedNoSession = 0, processed = 0
       for (const lead of leads) {
         try {
           const phone = lead.phone.replace(/\D/g, '')
 
           // Skip if AI already decided this conversation is complete
-          if (this._aiConversationDone.has(phone)) continue
+          if (this._aiConversationDone.has(phone)) { skippedDone++; continue }
 
           // Skip if reply already in progress for this phone
           if (this._replyInProgress.has(phone)) continue
 
           // Skip if we replied recently (cooldown)
           const lastReply = this._lastAiReplyTime.get(phone)
-          if (lastReply && Date.now() - lastReply < 60_000) continue
+          if (lastReply && Date.now() - lastReply < 60_000) { skippedCooldown++; continue }
 
           // Get conversation messages
-          const messages = await db.dbGetConversationMessages(phone, 100)
-          if (!messages || messages.length < 2) continue
+          let messages = await db.dbGetConversationMessages(phone, 100)
+          if (!messages) messages = []
 
-          // Check: is the last message inbound? (meaning we haven't replied yet)
+          // If missing outbound (campaign sent before message storage), bootstrap
+          if (messages.length < 2) {
+            const hasInbound = messages.some(m => m.direction === 'inbound')
+            const hasOutbound = messages.some(m => m.direction === 'outbound')
+            if (!hasOutbound) {
+              // Store original campaign message to create context
+              const campaigns = await db.dbGetAllCampaigns()
+              const camp = campaigns.find(c => c.id === lead.campaign_id)
+              if (camp?.template_text) {
+                await this.storeMessage(null, phone, 'outbound', camp.template_text, null, lead.id)
+                messages = await db.dbGetConversationMessages(phone, 100)
+              }
+            }
+            if (!messages || messages.length < 2) { skippedNoMsgs++; continue }
+          }
+
+          // Check last message direction
           const lastMsg = messages[messages.length - 1]
-          if (lastMsg.direction !== 'inbound') continue  // already followed up
+          if (lastMsg.direction !== 'inbound') {
+            // Our outbound is last — check if it's "stale" (sent 4+ hours ago, girl didn't reply)
+            const lastTime = new Date(lastMsg.created_at).getTime()
+            const hoursSince = (Date.now() - lastTime) / (1000 * 60 * 60)
+            if (hoursSince < 4) { skippedOutbound++; continue }  // too recent, wait for girl to reply
+            // Stale conversation — send ONE more follow-up nudge
+            // But limit to max 2 stale follow-ups per conversation
+            const outboundAfterLastInbound = []
+            for (let i = messages.length - 1; i >= 0; i--) {
+              if (messages[i].direction === 'outbound') outboundAfterLastInbound.push(messages[i])
+              else break
+            }
+            if (outboundAfterLastInbound.length >= 3) { skippedOutbound++; continue }  // already nudged enough, give up
+          }
 
           // Check for duplicate spam: if we sent same message 2+ times, skip (already damaged)
           const ourMsgs = messages.filter(m => m.direction === 'outbound')
@@ -630,8 +736,9 @@ export class Orchestrator {
             if (count >= 2) { hasDupes = true; break }
           }
           if (hasDupes) {
-            // Conversation is damaged by spam — extract data and stop
-            this.log(null, `🔄 ${phone}: обнаружены дубликаты, извлекаю данные без продолжения`)
+            skippedDupes++
+            // Conversation is damaged by spam — extract data and mark done
+            this._aiConversationDone.add(phone)
             const extracted = await extractConversationData(messages)
             if (extracted && lead.id) {
               await db.dbUpdateLeadAI(lead.id, {
@@ -642,16 +749,16 @@ export class Orchestrator {
             continue
           }
 
-          // Find which session sent to this lead
+          // Find which session sent to this lead (or any online session if no outbound stored)
           const lastOutbound = await db.dbGetLastOutboundMessage(phone)
-          if (!lastOutbound) continue
-          const sessionPhone = lastOutbound.session_phone
-
-          // Check if session is online — try fallback if assigned session offline
-          let session = this.sessions.get(sessionPhone)
+          let sessionPhone = lastOutbound?.session_phone || null
+          let session = sessionPhone ? this.sessions.get(sessionPhone) : null
           let actualSessionPhone = sessionPhone
-          if (!session || session.status !== 'online') {
-            // Fallback to any online session
+
+          // If no session found or session offline → use any online session
+          if (!session || session.status !== 'online' || !this.canSend(actualSessionPhone)) {
+            session = null
+            actualSessionPhone = null
             for (const [ph, s] of this.sessions) {
               if (s.status === 'online' && this.canSend(ph)) {
                 session = s
@@ -659,31 +766,36 @@ export class Orchestrator {
                 break
               }
             }
-            if (!session || session.status !== 'online') continue
+            if (!session || !actualSessionPhone) { skippedNoSession++; continue }
           }
 
           // Check daily limit
-          if (!this.canSend(actualSessionPhone)) continue
+          if (!this.canSend(actualSessionPhone)) { skippedNoSession++; continue }
 
           // Call autoReply — it will check dupes/cooldown/done internally
+          processed++
           await this._autoReply(phone, actualSessionPhone, lead)
 
           // If AI just marked it as done, don't count as retry
           if (this._aiConversationDone.has(phone)) continue
 
-          retried++
-          this.log(actualSessionPhone, `🔄 AI-ответ отправлен для ${phone}`)
+          // Check if reply was actually sent (last message is now outbound)
+          const msgsAfter = await db.dbGetConversationMessages(phone, 2)
+          const lastAfter = msgsAfter?.[msgsAfter.length - 1]
+          if (lastAfter?.direction === 'outbound') {
+            retried++
+            this.log(actualSessionPhone, `🔄 AI-ответ отправлен для ${phone}`)
+          }
 
-          // Longer delay between retries to prevent spam (15s)
-          await new Promise(r => setTimeout(r, 15_000))
+          // Delay between retries (8s)
+          await new Promise(r => setTimeout(r, 8_000))
         } catch (err) {
           this.log(null, `🔄 Ошибка retry для ${lead.phone}: ${err.message}`, 'error')
         }
       }
 
-      if (retried > 0) {
-        this.log(null, `🔄 Отправлено ${retried} пропущенных AI-ответов`)
-      }
+      // Summary log
+      this.log(null, `🔄 Retry: ${leads.length} лидов | sent=${retried} done=${skippedDone} cooldown=${skippedCooldown} outbound=${skippedOutbound} dupes=${skippedDupes} noMsgs=${skippedNoMsgs} noSession=${skippedNoSession}`)
     } catch (err) {
       this.log(null, `🔄 _retryMissedAutoReplies ошибка: ${err.message}`, 'error')
     } finally {
@@ -715,19 +827,19 @@ export class Orchestrator {
         this.sessions.set(s.phone_number, session)
 
         // ── Auto-start logic ──────────────────────────────────────────────
-        // Only auto-reconnect sessions that were ONLINE in DB (user had them connected).
-        // Sessions that were offline/disconnected stay offline until user clicks Connect.
-        // NOTE: temporary disconnects (428, timeout) do NOT write 'offline' to DB,
-        // so sessions that dropped due to network issues will auto-reconnect correctly.
-        if (s.status === 'online') {
-          // ── Стаггеринг: запускаем сессии с интервалом 15-30с друг от друга ──
-          // Чтобы WhatsApp не видел 3-4 одновременных подключения → меньше банов
-          const staggerDelay = autoConnected * (15_000 + Math.floor(Math.random() * 15_000))
+        // Auto-reconnect sessions that have credentials on disk.
+        // Sessions without credentials stay offline until user links via QR/code.
+        const sessionDir = path.resolve(process.env.SESSIONS_DIR || './sessions', s.phone_number.replace(/\+/g, ''))
+        const hasCreds = fs.existsSync(path.join(sessionDir, 'creds.json'))
+
+        if (hasCreds && s.status !== 'banned') {
+          // ── Стаггеринг: 10-20с между сессиями ──
+          const staggerDelay = autoConnected * (10_000 + Math.floor(Math.random() * 10_000))
           if (staggerDelay === 0) {
             session.start()
           } else {
             setTimeout(() => session.start(), staggerDelay)
-            this.log(s.phone_number, `Отложенный старт через ${Math.round(staggerDelay / 1000)}с (стаггеринг)`)
+            this.log(s.phone_number, `Старт через ${Math.round(staggerDelay / 1000)}с (стаггеринг)`)
           }
           autoConnected++
         } else {
@@ -750,8 +862,83 @@ export class Orchestrator {
     // ── Retry missed auto-replies ──────────────────────────────────────
     // 60 sec after startup: catch conversations where AI didn't reply
     setTimeout(() => this._retryMissedAutoReplies(), 60_000)
-    // Then check every 3 minutes
-    setInterval(() => this._retryMissedAutoReplies(), 3 * 60_000)
+    // Then check every 2 minutes
+    setInterval(() => this._retryMissedAutoReplies(), 2 * 60_000)
+
+    // ── SESSION WATCHDOG: бронебойный реконнект ──────────────────────
+    // Каждые 2 мин проверяем все сессии. Если должна быть online но отвалилась → реконнект
+    this._watchdogTimer = setInterval(() => this._sessionWatchdog(), 2 * 60_000)
+    // Первый запуск через 90 сек (дать время на стартовый connect)
+    setTimeout(() => this._sessionWatchdog(), 90_000)
+  }
+
+  /**
+   * Watchdog: проверяет ВСЕ сессии каждые 2 мин.
+   * - offline + creds → reconnect
+   * - initializing > 3 min → force reconnect
+   * - reconnecting без таймера → reconnect
+   * - online + dead ws → reconnect
+   */
+  async _sessionWatchdog() {
+    let reconnected = 0
+    const now = Date.now()
+
+    for (const [phone, session] of this.sessions) {
+      if (session.stopped) continue
+      if (session.status === 'banned') continue
+      if (session.status === 'qr_pending' || session.status === 'pairing_pending') continue
+
+      // ── Online: проверяем WebSocket state ──
+      if (session.status === 'online') {
+        try {
+          const ws = session.sock?.ws
+          if (ws && typeof ws.readyState === 'number' && ws.readyState !== 1) {
+            this.log(phone, `🔧 Watchdog: online но WS dead (state=${ws.readyState}), реконнект...`, 'warn')
+            session._startLock = false
+            session._scheduleReconnect('watchdog_ws_dead', ws.readyState)
+            reconnected++
+          }
+        } catch (_) {}
+        continue
+      }
+
+      // ── Reconnecting с таймером — не трогаем ──
+      if (session.status === 'reconnecting' && session._reconnectTimer) continue
+
+      // ── Initializing > 3 мин — застряла, force reconnect ──
+      if (session.status === 'initializing' && session._lastStartAt > 0) {
+        const stuckFor = now - session._lastStartAt
+        if (stuckFor < 3 * 60_000) continue // дать 3 мин на подключение
+        this.log(phone, `🔧 Watchdog: зависла в initializing ${Math.round(stuckFor/1000)}с, force reconnect`, 'warn')
+        session._startLock = false
+        session._cleanup()
+        session._scheduleReconnect('watchdog_stuck', 'initializing')
+        reconnected++
+        continue
+      }
+
+      // ── Offline / reconnecting без таймера — проверяем creds ──
+      const sessionDir = path.resolve(process.env.SESSIONS_DIR || './sessions', phone.replace(/\+/g, ''))
+      const credsFile = path.join(sessionDir, 'creds.json')
+      let hasCreds = false
+      try { hasCreds = fs.existsSync(credsFile) } catch (_) {}
+
+      if (!hasCreds) continue
+
+      this.log(phone, `🔧 Watchdog: ${session.status} + creds → авто-реконнект`, 'warn')
+      try {
+        session.stopped = false
+        session._startLock = false
+        session.start()
+        reconnected++
+      } catch (err) {
+        this.log(phone, `Watchdog: ошибка — ${err.message}`, 'error')
+      }
+    }
+
+    if (reconnected > 0) {
+      this.log(null, `🔧 Watchdog: переподключено ${reconnected} сессий`, 'system')
+    }
   }
 
   /**

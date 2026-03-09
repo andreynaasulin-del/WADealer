@@ -28,6 +28,22 @@ const SYSTEM_PROMPT = `Ты — AI-ассистент платформы WA Deal
 - Если пользователь описывает свой бизнес — адаптируй советы под его нишу`
 
 export default async function aiChatRoutes(app) {
+  // POST /api/ai/enable — re-enable AI after quota is topped up
+  app.post('/api/ai/enable', async (req, reply) => {
+    const { orchestrator } = await import('../orchestrator.js')
+    orchestrator.enableAI()
+    return { ok: true, message: 'AI автоответы включены' }
+  })
+
+  // GET /api/ai/status — check if AI is enabled/disabled
+  app.get('/api/ai/status', async (req, reply) => {
+    const { orchestrator } = await import('../orchestrator.js')
+    return {
+      ai_enabled: !orchestrator._aiDisabled,
+      disabled_reason: orchestrator._aiDisabled ? 'OpenAI 429 quota exceeded' : null
+    }
+  })
+
   // POST /api/ai/chat — send message to AI assistant
   app.post('/api/ai/chat', async (req, reply) => {
     if (!openai) {
