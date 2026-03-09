@@ -203,6 +203,15 @@ export default function WhatsAppDashboard() {
             {showCRM ? '✕' : '💬'}<span className="hidden sm:inline"> CRM</span>
           </button>
 
+          {/* Full CRM page link */}
+          <a
+            href="/crm"
+            className="text-[10px] sm:text-xs px-1.5 sm:px-2.5 py-1 rounded border border-[#30363d] text-[#7d8590] hover:text-green-400 hover:border-green-700 transition-colors font-medium"
+            title="Full CRM"
+          >
+            ↗ <span className="hidden sm:inline">Full CRM</span>
+          </a>
+
           {/* Leads Feed toggle */}
           <button
             onClick={() => setShowLeads(!showLeads)}
