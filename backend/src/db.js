@@ -75,10 +75,12 @@ export async function dbGetLeadsCounts() {
   return counts
 }
 
-export async function dbCreateCampaign({ name, template_text, session_id, delay_min_sec = 240, delay_max_sec = 540 }) {
+export async function dbCreateCampaign({ name, template_text, session_id, delay_min_sec = 240, delay_max_sec = 540, ai_criteria }) {
+  const row = { name, template_text, session_id, delay_min_sec, delay_max_sec }
+  if (ai_criteria) row.ai_criteria = ai_criteria
   const { data, error } = await supabase
     .from('wa_campaigns')
-    .insert({ name, template_text, session_id, delay_min_sec, delay_max_sec })
+    .insert(row)
     .select()
     .single()
   if (error) throw error

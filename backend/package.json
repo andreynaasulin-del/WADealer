@@ -22,5 +22,8 @@
     "qrcode": "^1.5.4",
     "socks-proxy-agent": "^8.0.5",
     "telegram": "^2.26.22"
+  },
+  "devDependencies": {
+    "pg": "^8.20.0"
   }
 }

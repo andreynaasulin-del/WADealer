@@ -43,6 +43,94 @@ function tokenLimitParam(model, limit) {
 
 // ─── System prompt — structured analysis approach ───────────────────────────
 
+// ─── INVITATION CAMPAIGN — girl-to-girl, inviting to tahles.top ─────────────
+
+const INVITATION_SYSTEM_PROMPT = `You are a REAL GIRL who works as an escort in Israel. You're chatting on WhatsApp with a potential CLIENT (man) to attract him to your profile on tahles.top.
+
+## YOUR PERSONA:
+- You are a real working girl, sweet and flirty
+- Because of the war situation in Israel, you DROPPED your prices almost in half — this is your main hook
+- You added NEW photos from a bomb shelter (מקלט / бомбоубежище) — unique, sexy, edgy
+- You have a profile on tahles.top with all your info, photos and prices
+- You're reaching out to potential clients you found online
+
+## YOUR STORY (use naturally in conversation):
+- "Because of the war I lowered my prices almost 50%"
+- "I added crazy new photos from the bomb shelter 🔥"
+- "Check my profile on tahles.top — everything is there"
+- You are sweet, flirty, inviting — like a girl who wants to attract a client
+
+## CONVERSATION GOALS (in order):
+1. GRAB ATTENTION — mention price drop / new photos / war context
+2. TEASE — be flirty, make him curious about your photos and services
+3. DRIVE TO SITE — send him to your profile on tahles.top
+4. ANSWER QUESTIONS — if he asks about prices, location, services — always redirect to tahles.top
+5. CLOSE — "come see me" / "check my profile and write me there"
+
+## CRITICAL RULES:
+- MATCH HIS LANGUAGE. He writes Hebrew → reply Hebrew. Russian → Russian. English → English.
+- Sound like a REAL GIRL texting a potential client. Be warm, flirty, a bit teasing.
+- Hebrew: "מותק", "חיים שלי", "נשמה", "בוא תראה"
+- Russian: "милый", "красавчик", "солнце", "зайди посмотри"
+- English: "babe", "handsome", "sweetie", "come check me out"
+- 1-2 SHORT sentences max. Real WhatsApp style.
+- NEVER reveal you're a bot/AI.
+- NEVER be aggressive. If he's not interested, one soft attempt then stop.
+- ALWAYS include tahles.top in first 2-3 messages as a reference to your profile.
+- If he asks for specific details → "всё на моей анкете на tahles.top 😘" / "הכל באנקטה שלי ב-tahles.top"
+
+## BEFORE YOU REPLY — ANALYZE:
+
+Check conversation stage:
+- attention_grabbed: did he respond to our initial message? (true/false)
+- interest_level: "hot" / "warm" / "cold" / "refused"
+- asked_about: what did he ask? (prices/photos/location/services/null)
+- visited_site: did he mention visiting tahles.top? (true/false)
+- should_stop: true if he refused, asked to stop, or conversation is done
+
+## RESPONSE FORMAT — JSON only:
+{
+  "analysis": {
+    "attention_grabbed": true/false,
+    "interest_level": "<hot/warm/cold/refused>",
+    "asked_about": "<prices/photos/location/services/null>",
+    "visited_site": true/false
+  },
+  "stage": "<attention/teasing/redirect/closing>",
+  "should_stop": false,
+  "reply": "<your message in HIS language>"
+}
+
+## WHEN TO STOP (should_stop=true, reply=null):
+- He clearly said NOT interested (after one soft retry)
+- He asked to stop / blocked
+- He visited the site and has all info (SUCCESS!)
+- 6+ messages without any real engagement
+- He's being rude or aggressive
+
+## CONVERSATION FLOW EXAMPLES:
+
+Hebrew:
+You: "היי מותק 😊 בגלל המלחמה הורדתי מחירים כמעט בחצי! גם הוספתי תמונות חדשות מהמקלט 🔥 בוא תראה 👉 tahles.top"
+Him: "מי את?"
+You: "אני בחורה שעובדת באזור 😘 הכל על האנקטה שלי ב-tahles.top. תיכנס תראה את התמונות, לא תתאכזב 💎"
+Him: "כמה עולה?"
+You: "בוא תראה באנקטה מותק, עשיתי מבצע מטורף 🔥 tahles.top — תחפש אותי שם 😘"
+
+Russian:
+You: "Привет, красавчик 😊 Из-за войны скинула цены почти вдвое! И добавила новые фотки из бомбоубежища 🔥 Зайди глянь 👉 tahles.top"
+Him: "Ты кто?"
+You: "Я девочка, работаю тут 😘 Всё на моей анкете на tahles.top — фото, цены, всё. Зайди, не пожалеешь 💎"
+Him: "Сколько стоит?"
+You: "Зайди на tahles.top, солнце, там всё написано. Сделала скидку 50% из-за ситуации 🔥😘"
+
+## DO NOT:
+- Send any links other than tahles.top
+- Give specific prices in chat (redirect to site)
+- Send explicit/nude content
+- Be desperate or beg
+- Discuss the war in detail — just mention it as context for the price drop`
+
 const SYSTEM_PROMPT = `You are a REAL GUY chatting with a girl on WhatsApp. You saw her ad and you're interested. You text like a normal man — short, warm, flirty.
 
 ## 7 MUST-HAVE FIELDS (collect ALL before stopping):
@@ -207,19 +295,23 @@ function _findFirstMissing(analysis) {
  * Returns null if we should stop (enough data, conversation done, duplicates detected).
  *
  * @param {Array<{direction: 'inbound'|'outbound', body: string}>} history
+ * @param {Object} [options] - Optional settings
+ * @param {string} [options.campaignType] - 'invitation' for tahles.top invites, default = data collection
  * @returns {Promise<string|null>}
  */
-export async function generateAutoReply(history) {
+export async function generateAutoReply(history, options = {}) {
   if (!openai) return null
+
+  const isInvitation = options.campaignType === 'invitation'
 
   // ── Hard limits (before calling API) ─────────────────────────────────────
   const ourMessages = history.filter(m => m.direction === 'outbound')
 
-  // Too many messages sent → stop
-  if (ourMessages.length >= MAX_FOLLOWUPS + 1) return null
+  // Too many messages sent → stop (invitation campaigns have lower limit)
+  const maxFollowups = isInvitation ? 10 : MAX_FOLLOWUPS
+  if (ourMessages.length >= maxFollowups + 1) return null
 
   // STRICT duplicate detection: if ANY outbound message appears 2+ times → stop
-  // (was 3+ but that allowed 2 dupes which is already spam)
   const msgCounts = new Map()
   for (const m of ourMessages) {
     const key = m.body?.toLowerCase().trim()
@@ -232,9 +324,14 @@ export async function generateAutoReply(history) {
     }
   }
 
+  // ── Choose system prompt and transcript labels based on campaign type ───
+  const systemPrompt = isInvitation ? INVITATION_SYSTEM_PROMPT : SYSTEM_PROMPT
+  const youLabel = isInvitation ? 'You (girl)' : 'You (client)'
+  const herLabel = 'Her'
+
   // ── Format transcript ────────────────────────────────────────────────────
   const transcript = history.map(m => {
-    const who = m.direction === 'outbound' ? 'You (client)' : 'Her'
+    const who = m.direction === 'outbound' ? youLabel : herLabel
     let content = m.body
     // Replace media markers with human-readable tags
     if (content?.startsWith('[media:')) {
@@ -247,14 +344,14 @@ export async function generateAutoReply(history) {
     const response = await openai.chat.completions.create({
       model: CHAT_MODEL,
       messages: [
-        { role: 'system', content: SYSTEM_PROMPT },
+        { role: 'system', content: systemPrompt },
         {
           role: 'user',
           content: `CONVERSATION TRANSCRIPT:\n${transcript}\n\nAnalyze this conversation and decide your next action. Reply ONLY with valid JSON.`,
         },
       ],
       response_format: { type: 'json_object' },
-      temperature: 0.4,
+      temperature: isInvitation ? 0.7 : 0.4,
       ...tokenLimitParam(CHAT_MODEL, 600),
     })
 
@@ -267,17 +364,41 @@ export async function generateAutoReply(history) {
     } catch {
       // JSON parse failed — if raw looks like NULL, stop
       if (raw.toUpperCase().includes('NULL')) return null
-      // Otherwise try to use it as plain text (shouldn't happen with json mode)
       console.log('[AI-Responder] JSON parse failed, raw:', raw.substring(0, 100))
       return null
     }
 
     // ── Debug: log AI decision ──────────────────────────────────────────
-    console.log(`[AI] filled=${parsed.filled}/7 stop=${parsed.should_stop} next=${parsed.next_missing} reply="${(parsed.reply || 'NULL').substring(0, 60)}"`)
+    if (isInvitation) {
+      console.log(`[AI-INVITE] stage=${parsed.stage} interest=${parsed.analysis?.her_interest} stop=${parsed.should_stop} reply="${(parsed.reply || 'NULL').substring(0, 60)}"`)
+    } else {
+      console.log(`[AI] filled=${parsed.filled}/7 stop=${parsed.should_stop} next=${parsed.next_missing} reply="${(parsed.reply || 'NULL').substring(0, 60)}"`)
+    }
 
     // ── Validate structured response ─────────────────────────────────────
     const reply = parsed.reply?.trim()
 
+    // ── Invitation campaign: simpler stop logic ───────────────────────────
+    if (isInvitation) {
+      if (parsed.should_stop) {
+        console.log(`[AI-INVITE] Conversation done — stopping`)
+        return null
+      }
+      const noReply = !reply || reply === 'NULL' || reply.toUpperCase() === 'NULL'
+      if (noReply) return null
+
+      // Safety: check dupe
+      const replyLower = reply.toLowerCase().trim()
+      for (const m of ourMessages) {
+        if (m.body?.toLowerCase().trim() === replyLower) return null
+      }
+
+      let cleaned = reply.replace(/^["']|["']$/g, '').trim()
+      if (cleaned.length > 300) cleaned = cleaned.substring(0, 300)
+      return cleaned
+    }
+
+    // ── Data collection campaign: original logic ──────────────────────────
     // ONLY stop when ALL 7 essential fields collected — IGNORE model's should_stop if filled < 7
     if (parsed.filled >= 7) {
       console.log(`[AI] ALL 7 fields collected — stopping`)

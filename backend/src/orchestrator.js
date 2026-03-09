@@ -435,8 +435,11 @@ export class Orchestrator {
         if (!messages || messages.length < 2) return
       }
 
-      // Generate next question
-      const nextMsg = await generateAutoReply(messages)
+      // Determine campaign type from ai_criteria field
+      const campaignType = campaign.ai_criteria === 'invitation' ? 'invitation' : undefined
+
+      // Generate next reply (pass campaign type for invitation campaigns)
+      const nextMsg = await generateAutoReply(messages, { campaignType })
       if (!nextMsg) {
         // Extract data to see how many fields we have
         const extracted = await extractConversationData(messages)

@@ -37,6 +37,7 @@ export default async function campaignRoutes(fastify) {
           session_id:    { type: 'string', nullable: true },
           delay_min_sec: { type: 'integer', default: 240 },
           delay_max_sec: { type: 'integer', default: 540 },
+          ai_criteria:   { type: 'string', nullable: true },
         },
       },
     },
