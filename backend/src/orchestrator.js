@@ -408,11 +408,11 @@ export class Orchestrator {
 
     this._replyInProgress.add(phoneKey)
     try {
-      // Check campaign exists — AI auto-reply works for ANY campaign status
-      // (stopped/paused campaigns still need to follow up replied leads)
+      // Check campaign exists and is not stopped
       const campaigns = await db.dbGetAllCampaigns()
       const campaign = campaigns.find(c => c.id === lead.campaign_id)
       if (!campaign) return
+      if (campaign.status === 'stopped') return
 
       // Get full conversation history
       let messages = await db.dbGetConversationMessages(remotePhone, 100)
