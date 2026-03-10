@@ -438,8 +438,18 @@ export class Orchestrator {
       // Determine campaign type from ai_criteria field
       const campaignType = campaign.ai_criteria === 'invitation' ? 'invitation' : undefined
 
-      // Generate next reply (pass campaign type for invitation campaigns)
-      const nextMsg = await generateAutoReply(messages, { campaignType })
+      // Resolve profile URL for invitation campaigns
+      let profileUrl
+      if (campaignType === 'invitation' && campaign.profile_id) {
+        const profile = await db.dbGetProfileById(campaign.profile_id)
+        if (profile) {
+          const frontendUrl = process.env.FRONTEND_URL || 'https://tahles.top'
+          profileUrl = `${frontendUrl}/p/${profile.slug}`
+        }
+      }
+
+      // Generate next reply (pass campaign type + profile URL for invitation campaigns)
+      const nextMsg = await generateAutoReply(messages, { campaignType, profileUrl })
       if (!nextMsg) {
         // Extract data to see how many fields we have
         const extracted = await extractConversationData(messages)

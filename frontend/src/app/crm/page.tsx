@@ -1,7 +1,7 @@
 'use client'
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { useRouter } from 'next/navigation'
-import { api, type Conversation, type WaMessage, type Session } from '@/lib/api'
+import { api, type Conversation, type WaMessage, type Session, type Campaign } from '@/lib/api'
 import { useAuth } from '@/contexts/AuthContext'
 
 function timeAgo(iso: string): string {
@@ -33,6 +33,8 @@ export default function CRMPage() {
   const [loadingMsgs, setLoadingMsgs] = useState(false)
   const [search, setSearch] = useState('')
   const [filterDir, setFilterDir] = useState<'all' | 'inbound' | 'outbound'>('all')
+  const [campaigns, setCampaigns] = useState<Campaign[]>([])
+  const [filterCampaign, setFilterCampaign] = useState('')
   const chatEndRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -40,20 +42,25 @@ export default function CRMPage() {
   }, [isAuthenticated, isLoading, router])
 
   const loadConversations = useCallback(async () => {
-    try { setConversations(await api.crm.conversations()) } catch (_) {}
-  }, [])
+    try { setConversations(await api.crm.conversations(filterCampaign || undefined)) } catch (_) {}
+  }, [filterCampaign])
 
   const loadSessions = useCallback(async () => {
     try { setSessions(await api.sessions.list()) } catch (_) {}
+  }, [])
+
+  const loadCampaigns = useCallback(async () => {
+    try { setCampaigns(await api.campaigns.list()) } catch (_) {}
   }, [])
 
   useEffect(() => {
     if (!isAuthenticated) return
     loadConversations()
     loadSessions()
+    loadCampaigns()
     const t = setInterval(loadConversations, 10_000)
     return () => clearInterval(t)
-  }, [isAuthenticated, loadConversations, loadSessions])
+  }, [isAuthenticated, loadConversations, loadSessions, loadCampaigns])
 
   const loadMessages = useCallback(async (phone: string) => {
     setLoadingMsgs(true)
@@ -162,6 +169,21 @@ export default function CRMPage() {
                 </button>
               ))}
             </div>
+            {campaigns.length > 0 && (
+              <select
+                value={filterCampaign}
+                onChange={e => { setFilterCampaign(e.target.value); setSelectedContact(null) }}
+                className="w-full bg-[#161b22] border border-[#30363d] rounded px-2 py-1 text-[10px] text-[#e6edf3]
+                           focus:outline-none focus:border-green-500 transition-colors"
+              >
+                <option value="">Все кампании</option>
+                {campaigns.map(c => (
+                  <option key={c.id} value={c.id}>
+                    {c.name} ({c.total_leads} лидов)
+                  </option>
+                ))}
+              </select>
+            )}
           </div>
 
           {/* Contact list */}

@@ -697,7 +697,7 @@ export async function dbDeleteMessage(id) {
   if (error) throw error
 }
 
-export async function dbGetConversations(session_phone) {
+export async function dbGetConversations(session_phone, campaign_id) {
   let query = supabase
     .from('wa_conversations')
     .select('*')
@@ -711,6 +711,19 @@ export async function dbGetConversations(session_phone) {
     if (error.code === 'PGRST205' || error.code === '42P01') return []
     throw error
   }
+
+  // Filter by campaign — get lead phones and intersect
+  if (campaign_id && data) {
+    const { data: leads } = await supabase
+      .from('leads_for_invite')
+      .select('phone')
+      .eq('campaign_id', campaign_id)
+    if (leads) {
+      const phoneSet = new Set(leads.map(l => l.phone.replace(/\D/g, '')))
+      return data.filter(c => phoneSet.has(c.remote_phone.replace(/\D/g, '')))
+    }
+  }
+
   return data || []
 }
 
@@ -880,6 +893,85 @@ export async function dbGetRepliedLeads() {
     .limit(500)
   if (error) return []
   return data || []
+}
+
+// ─── Girl Profiles ──────────────────────────────────────────────────────────
+
+export async function dbGetAllProfiles() {
+  const { data, error } = await supabase
+    .from('girl_profiles')
+    .select('*')
+    .order('created_at', { ascending: false })
+  if (error) throw error
+  return data || []
+}
+
+export async function dbGetProfileBySlug(slug) {
+  const { data, error } = await supabase
+    .from('girl_profiles')
+    .select('*')
+    .eq('slug', slug)
+    .eq('is_published', true)
+    .single()
+  if (error) return null
+  return data
+}
+
+export async function dbGetProfileById(id) {
+  const { data, error } = await supabase
+    .from('girl_profiles')
+    .select('*')
+    .eq('id', id)
+    .single()
+  if (error) return null
+  return data
+}
+
+export async function dbCreateProfile(profile) {
+  const { data, error } = await supabase
+    .from('girl_profiles')
+    .insert(profile)
+    .select()
+    .single()
+  if (error) throw error
+  return data
+}
+
+export async function dbUpdateProfile(id, updates) {
+  const { data, error } = await supabase
+    .from('girl_profiles')
+    .update({ ...updates, updated_at: new Date().toISOString() })
+    .eq('id', id)
+    .select()
+    .single()
+  if (error) throw error
+  return data
+}
+
+export async function dbDeleteProfile(id) {
+  const { error } = await supabase
+    .from('girl_profiles')
+    .delete()
+    .eq('id', id)
+  if (error) throw error
+}
+
+export async function dbExcludeLead(leadId, excluded) {
+  const { error } = await supabase
+    .from('leads_for_invite')
+    .update({ profile_excluded: excluded, updated_at: new Date().toISOString() })
+    .eq('id', leadId)
+  if (error) throw error
+}
+
+export async function dbGetLeadById(leadId) {
+  const { data, error } = await supabase
+    .from('leads_for_invite')
+    .select('*')
+    .eq('id', leadId)
+    .single()
+  if (error) return null
+  return data
 }
 
 export default supabase

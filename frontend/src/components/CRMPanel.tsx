@@ -1,6 +1,6 @@
 'use client'
 import { useState, useEffect, useCallback, useRef } from 'react'
-import { api, type Conversation, type WaMessage, type Session } from '@/lib/api'
+import { api, type Conversation, type WaMessage, type Session, type Campaign } from '@/lib/api'
 
 interface Props {
   sessions: Session[]
@@ -23,17 +23,24 @@ export default function CRMPanel({ sessions, selectedPhone, onClose }: Props) {
   const [replyText, setReplyText]               = useState('')
   const [sending, setSending]                   = useState(false)
   const [loadingMsgs, setLoadingMsgs]           = useState(false)
+  const [campaigns, setCampaigns]               = useState<Campaign[]>([])
+  const [filterCampaign, setFilterCampaign]     = useState('')
   const chatEndRef = useRef<HTMLDivElement>(null)
 
-  const loadConversations = useCallback(async () => {
-    try { setConversations(await api.crm.conversations()) } catch (_) {}
+  const loadCampaigns = useCallback(async () => {
+    try { setCampaigns(await api.campaigns.list()) } catch (_) {}
   }, [])
+
+  const loadConversations = useCallback(async () => {
+    try { setConversations(await api.crm.conversations(filterCampaign || undefined)) } catch (_) {}
+  }, [filterCampaign])
 
   useEffect(() => {
     loadConversations()
+    loadCampaigns()
     const t = setInterval(loadConversations, 15_000)
     return () => clearInterval(t)
-  }, [loadConversations])
+  }, [loadConversations, loadCampaigns])
 
   const loadMessages = useCallback(async (phone: string) => {
     setLoadingMsgs(true)
@@ -83,6 +90,25 @@ export default function CRMPanel({ sessions, selectedPhone, onClose }: Props) {
 
       {/* Body — contact list above chat (vertical) */}
       <div className="flex flex-col flex-1 min-h-0">
+
+        {/* Campaign filter */}
+        {campaigns.length > 0 && (
+          <div className="shrink-0 border-b border-[#30363d] px-2 py-1.5 bg-[#0d1117]">
+            <select
+              value={filterCampaign}
+              onChange={e => { setFilterCampaign(e.target.value); setSelectedContact(null) }}
+              className="w-full bg-[#161b22] border border-[#30363d] rounded px-2 py-1 text-[10px] text-[#e6edf3]
+                         focus:outline-none focus:border-green-500 transition-colors"
+            >
+              <option value="">Все кампании</option>
+              {campaigns.map(c => (
+                <option key={c.id} value={c.id}>
+                  {c.name} ({c.total_leads} лидов)
+                </option>
+              ))}
+            </select>
+          </div>
+        )}
 
         {/* Contact list */}
         <div className="shrink-0 border-b border-[#30363d] overflow-y-auto" style={{ maxHeight: '40%' }}>

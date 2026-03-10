@@ -12,6 +12,7 @@ import statsRoutes    from './routes/stats.js'
 import telegramRoutes from './routes/telegram.js'
 import crmRoutes      from './routes/crm.js'
 import aiChatRoutes   from './routes/ai-chat.js'
+import profileRoutes  from './routes/profiles.js'
 import {
   dbValidateAuthSession,
   dbCountInviteTokens,
@@ -26,6 +27,7 @@ const ORIGIN = process.env.CORS_ORIGIN || 'http://localhost:3000'
 const PUBLIC_ROUTES = [
   '/api/auth/login',
   '/api/auth/verify',
+  '/api/public/profile',
   '/health',
 ]
 
@@ -92,6 +94,7 @@ await app.register(statsRoutes)
 await app.register(telegramRoutes)
 await app.register(crmRoutes)
 await app.register(aiChatRoutes)
+await app.register(profileRoutes)
 
 // ─── WebSocket endpoint — live logs & events ─────────────────────────────────
 // @fastify/websocket v8 passes a WebSocketStream (Duplex); raw WS is at .socket

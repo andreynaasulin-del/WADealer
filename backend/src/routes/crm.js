@@ -5,7 +5,8 @@ export default async function crmRoutes(fastify) {
   // ── List conversations ────────────────────────────────────────────────────
   fastify.get('/api/crm/conversations', async (req) => {
     const sessionPhone = req.query.session_phone || null
-    return dbGetConversations(sessionPhone)
+    const campaignId = req.query.campaign_id || null
+    return dbGetConversations(sessionPhone, campaignId)
   })
 
   // ── Get messages for a conversation ───────────────────────────────────────

@@ -155,7 +155,10 @@ export default async function campaignRoutes(fastify) {
       if (!hasLocation && !hasPrice) continue
 
       enriched.push({
+        id:        lead.id,
         phone:     lead.phone,
+        nickname:  lead.nickname || null,
+        profile_excluded: lead.profile_excluded || false,
         score,
         category:  score >= 80 ? 'HOT' : score >= 50 ? 'WARM' : score >= 20 ? 'COLD' : 'IRRELEVANT',
         city:                  parsed?.city || null,

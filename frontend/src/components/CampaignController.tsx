@@ -1,6 +1,6 @@
 'use client'
 import { useState, useEffect, useRef } from 'react'
-import { api, type Campaign, type Session, type Lead } from '@/lib/api'
+import { api, type Campaign, type Session, type Lead, type GirlProfile } from '@/lib/api'
 import { previewSpintax } from '@/lib/spintax'
 
 interface Props {
@@ -67,6 +67,8 @@ export default function CampaignController({ sessions, selectedPhone, onStatsRef
   const [showTemplate, setShowTemplate] = useState(true)   // collapsible template section
   const [aiStats, setAiStats]           = useState<{ hot: number; warm: number; cold: number; irrelevant: number; unscored: number }>({ hot: 0, warm: 0, cold: 0, irrelevant: 0, unscored: 0 })
   const [repliedCount, setRepliedCount] = useState(0)
+  const [profiles, setProfiles]         = useState<GirlProfile[]>([])
+  const [profileId, setProfileId]       = useState('')
 
   // File import state
   const fileRef = useRef<HTMLInputElement>(null)
@@ -76,7 +78,7 @@ export default function CampaignController({ sessions, selectedPhone, onStatsRef
   // Find the selected session object (for UUID)
   const selectedSession = sessions.find(s => s.phone === selectedPhone) || null
 
-  useEffect(() => { loadCampaigns() }, [])
+  useEffect(() => { loadCampaigns(); loadProfiles() }, [])
   useEffect(() => { setPreview(previewSpintax(template)) }, [template])
 
   // When selected session changes, auto-select first campaign
@@ -128,6 +130,12 @@ export default function CampaignController({ sessions, selectedPhone, onStatsRef
     } catch (_) {}
   }
 
+  async function loadProfiles() {
+    try {
+      setProfiles(await api.profiles.list())
+    } catch (_) {}
+  }
+
   // Filter campaigns for the selected session
   const filteredCampaigns = selectedSession
     ? campaigns.filter(c => c.session_id === selectedSession.id || !c.session_id)
@@ -143,6 +151,7 @@ export default function CampaignController({ sessions, selectedPhone, onStatsRef
         delay_min_sec: delayMin,
         delay_max_sec: delayMax,
         ...(aiCriteria ? { ai_criteria: aiCriteria } : {}),
+        ...(profileId ? { profile_id: profileId } : {}),
       })
       setCampaigns(prev => [c, ...prev])
       setSelected(c)
@@ -335,6 +344,11 @@ export default function CampaignController({ sessions, selectedPhone, onStatsRef
                       {c.name}
                     </span>
                     <span className="text-[9px] text-[#484f58]">{statusLabel}</span>
+                    {c.profile_id && (
+                      <span className="text-[8px] px-1 py-0.5 rounded bg-pink-500/20 text-pink-400">
+                        {profiles.find(p => p.id === c.profile_id)?.name || 'Profile'}
+                      </span>
+                    )}
                   </div>
                   {c.total_leads > 0 && (
                     <div className="flex items-center gap-2 mt-0.5">
@@ -499,6 +513,29 @@ export default function CampaignController({ sessions, selectedPhone, onStatsRef
               onChange={e => setAiCriteria(e.target.value)}
             />
           </div>
+
+          {/* Profile selector for invitation campaigns */}
+          {aiCriteria.toLowerCase().includes('invitation') && profiles.length > 0 && (
+            <div className="flex flex-col gap-1">
+              <label className="text-[#7d8590] text-[10px] uppercase tracking-wider">Профиль девушки</label>
+              <select
+                value={profileId}
+                onChange={e => setProfileId(e.target.value)}
+                className="bg-[#161b22] border border-[#30363d] rounded px-2.5 py-1.5 text-xs text-[#e6edf3]
+                           focus:outline-none focus:border-pink-500 transition-colors"
+              >
+                <option value="">— Без профиля —</option>
+                {profiles.map(p => (
+                  <option key={p.id} value={p.id}>
+                    {p.name} {p.city ? `(${p.city})` : ''} — /p/{p.slug}
+                  </option>
+                ))}
+              </select>
+              <p className="text-[9px] text-[#484f58]">
+                AI будет отправлять ссылку на этот профиль вместо generic tahles.top
+              </p>
+            </div>
+          )}
 
           <button
             onClick={createCampaign}
@@ -851,6 +888,42 @@ export default function CampaignController({ sessions, selectedPhone, onStatsRef
               {selected.status !== 'stopped' ? 'ON' : 'OFF'}
             </span>
           </div>
+
+          {/* Profile link for invitation campaigns */}
+          {profiles.length > 0 && (
+            <div className="flex items-center gap-2 bg-[#0d1117] border border-pink-900/40 rounded-lg p-2.5">
+              <span className="text-pink-400 text-[10px] uppercase tracking-wider font-bold shrink-0">Профиль</span>
+              <select
+                value={selected.profile_id || ''}
+                onChange={async e => {
+                  try {
+                    await api.campaigns.update(selected.id, { profile_id: e.target.value || null } as Partial<Campaign>)
+                    loadCampaigns()
+                  } catch (_) {}
+                }}
+                className="flex-1 bg-[#161b22] border border-[#30363d] rounded px-2 py-1 text-xs text-[#e6edf3]
+                           focus:outline-none focus:border-pink-500 transition-colors"
+              >
+                <option value="">— Без профиля —</option>
+                {profiles.map(p => (
+                  <option key={p.id} value={p.id}>
+                    {p.name} {p.city ? `(${p.city})` : ''} — /p/{p.slug}
+                  </option>
+                ))}
+              </select>
+              {selected.profile_id && (() => {
+                const p = profiles.find(pr => pr.id === selected.profile_id)
+                return p ? (
+                  <button
+                    onClick={() => navigator.clipboard.writeText(`https://tahles.top/p/${p.slug}`)}
+                    className="text-[9px] px-1.5 py-0.5 rounded bg-pink-500/20 text-pink-400 hover:bg-pink-500/30 cursor-pointer shrink-0"
+                  >
+                    Copy URL
+                  </button>
+                ) : null
+              })()}
+            </div>
+          )}
 
           {/* Campaign stats mini row */}
           <div className="grid grid-cols-5 gap-1 text-center">

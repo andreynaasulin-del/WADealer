@@ -142,13 +142,29 @@ export const api = {
   },
 
   crm: {
-    conversations: () => req<Conversation[]>('/crm/conversations'),
+    conversations: (campaignId?: string) =>
+      req<Conversation[]>(`/crm/conversations${campaignId ? `?campaign_id=${campaignId}` : ''}`),
     messages: (phone: string, limit = 50, offset = 0) =>
       req<WaMessage[]>(`/crm/conversations/${encodeURIComponent(phone)}?limit=${limit}&offset=${offset}`),
     send: (phone: string, text: string, session_phone?: string) =>
       req<{ ok: boolean; from: string; to: string }>(`/crm/conversations/${encodeURIComponent(phone)}/send`, {
         method: 'POST', body: JSON.stringify({ text, session_phone }),
       }),
+  },
+
+  profiles: {
+    list: () => req<GirlProfile[]>('/profiles'),
+    get: (slug: string) => req<GirlProfile>(`/public/profile/${slug}`),
+    create: (data: Partial<GirlProfile>) =>
+      req<GirlProfile>('/profiles', { method: 'POST', body: JSON.stringify(data) }),
+    createFromLead: (leadId: string) =>
+      req<GirlProfile>(`/profiles/from-lead/${leadId}`, { method: 'POST', body: '{}' }),
+    update: (id: string, data: Partial<GirlProfile>) =>
+      req<GirlProfile>(`/profiles/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
+    remove: (id: string) =>
+      req<void>(`/profiles/${id}`, { method: 'DELETE' }),
+    excludeLead: (leadId: string, excluded: boolean) =>
+      req<void>(`/leads/${leadId}/exclude`, { method: 'PUT', body: JSON.stringify({ excluded }) }),
   },
 
   telegram: {
@@ -229,6 +245,7 @@ export interface Campaign {
   total_errors: number
   total_leads: number
   ai_criteria: string | null
+  profile_id: string | null
   created_at: string
 }
 
@@ -239,6 +256,7 @@ export interface CreateCampaign {
   delay_min_sec?: number
   delay_max_sec?: number
   ai_criteria?: string
+  profile_id?: string
 }
 
 export interface Lead {
@@ -340,7 +358,10 @@ export interface TelegramStats {
 }
 
 export interface FeedLead {
+  id: string
   phone: string
+  nickname: string | null
+  profile_excluded: boolean
   score: number
   category: 'HOT' | 'WARM' | 'COLD' | 'IRRELEVANT'
   city: string | null
@@ -378,4 +399,29 @@ export interface Conversation {
   last_message: string
   last_direction: 'inbound' | 'outbound'
   last_message_at: string
+}
+
+// ─── Girl Profile Types ─────────────────────────────────────────────────────
+
+export interface GirlProfile {
+  id: string
+  slug: string
+  name: string
+  city: string | null
+  address: string | null
+  age: number | null
+  nationality: string | null
+  price_text: string | null
+  price_min: number | null
+  price_max: number | null
+  incall_outcall: string | null
+  independent_or_agency: string | null
+  services: string[] | null
+  availability: string | null
+  description: string | null
+  photos: string[]
+  is_published: boolean
+  lead_id: string | null
+  created_at: string
+  updated_at: string
 }
