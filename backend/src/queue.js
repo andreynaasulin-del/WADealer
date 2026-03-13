@@ -176,14 +176,30 @@ export class MessageQueue {
       }
 
       try {
-        const text = parseSpintax(item.template)
-        const result = await activeSession.sendMessage(item.phone, text)
+        const fullText = parseSpintax(item.template)
+        const parts = fullText.split('|||').map(p => p.trim()).filter(Boolean)
+
+        let lastResult = null
+        let allTexts = []
+        for (let i = 0; i < parts.length; i++) {
+          if (i > 0) {
+            // Simulate typing delay between messages (2-4 sec)
+            const typingDelay = 2000 + Math.random() * 2000
+            if (activeSession.sendPresenceUpdate) {
+              await activeSession.sendPresenceUpdate(item.phone, 'composing').catch(() => {})
+            }
+            await sleep(typingDelay)
+          }
+          lastResult = await activeSession.sendMessage(item.phone, parts[i])
+          allTexts.push(parts[i])
+        }
+        const text = allTexts.join('\n')
 
         // Store outbound message for CRM (WhatsApp only)
         if (itemPlatform === 'whatsapp') {
           this.orchestrator.storeMessage(
             sendSessionPhone, item.phone, 'outbound', text,
-            result?.key?.id, item.id,
+            lastResult?.key?.id, item.id,
           )
         }
 

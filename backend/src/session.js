@@ -540,4 +540,25 @@ export class Session extends EventEmitter {
     this.log(`Отправлено → ${toPhone}`)
     return result
   }
+
+  /**
+   * Send an image with optional caption.
+   * @param {string} toPhone - recipient phone number
+   * @param {Buffer} imageBuffer - image data as Buffer
+   * @param {string} [caption] - optional caption text
+   */
+  async sendImage(toPhone, imageBuffer, caption = '') {
+    if (this.status !== 'online' || !this.sock) {
+      throw new Error(`Сессия ${this.phone} не в сети`)
+    }
+    const bareJid = `${normalizePhone(toPhone)}@s.whatsapp.net`
+    await this.sock.sendPresenceUpdate('composing', bareJid)
+    await sleep(1500 + Math.random() * 1500) // 1.5-3s delay like selecting a photo
+    await this.sock.sendPresenceUpdate('paused', bareJid)
+    const msg = { image: imageBuffer }
+    if (caption) msg.caption = caption
+    const result = await this.sock.sendMessage(bareJid, msg)
+    this.log(`Фото отправлено → ${toPhone}${caption ? ' + caption' : ''}`)
+    return result
+  }
 }
