@@ -520,6 +520,20 @@ export async function generateAutoReply(history, options = {}) {
         return null
       }
 
+      // HARD RULE: strip links from FIRST AI reply (ourMessages[0] = template, so if length==1 this is first AI reply)
+      if (ourMessages.length <= 1) {
+        const before = cleaned
+        cleaned = cleaned.replace(/https?:\/\/\S+/gi, '').replace(/tahles\.top\S*/gi, '').replace(/\s{2,}/g, ' ').trim()
+        if (before !== cleaned) {
+          console.log(`[AI-INVITE] STRIPPED link from first AI reply: "${before.substring(0, 80)}" → "${cleaned.substring(0, 80)}"`)
+        }
+        // If after stripping only emoji/whitespace remains, generate a fallback
+        if (!cleaned || cleaned.replace(/[\s\p{Emoji}]/gu, '').length < 5) {
+          cleaned = 'היי חמוד, הורדתי מחירים לאחרונה ויש לי תמונות חדשות מטורפות 🔥'
+          console.log(`[AI-INVITE] First reply was link-only, using fallback`)
+        }
+      }
+
       return cleaned
     }
 
