@@ -42,7 +42,7 @@ export class Orchestrator {
 
     /** Daily send limit per session — { sessionPhone: { count, day } } */
     this._dailySent = new Map()
-    this.DAILY_LIMIT = 45
+    this.DAILY_LIMIT = 20
 
     /** Global LID → Phone map (WhatsApp Linked Devices resolution) */
     this._lidMap = new Map()
