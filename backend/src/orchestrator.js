@@ -399,11 +399,24 @@ export class Orchestrator {
       return
     }
 
-    // ── Cooldown — don't send if we replied less than 60s ago ─────────────
+    // ── Cooldown (memory) — don't send if we replied less than 60s ago ──────
     const lastReply = this._lastAiReplyTime.get(phoneKey)
     if (lastReply && Date.now() - lastReply < 60_000) {
       this.log(sessionPhone, `🤖 AI: ${phoneKey} — кулдаун (ответили ${Math.round((Date.now() - lastReply) / 1000)}с назад)`, 'warn')
       return
+    }
+
+    // ── Cooldown (DB) — survive server restarts, check last outbound in DB ──
+    // Prevents re-spamming the same message after overnight restart
+    const lastOutboundDB = await db.dbGetLastOutboundMessage(phoneKey)
+    if (lastOutboundDB) {
+      const minsAgoOutbound = (Date.now() - new Date(lastOutboundDB.created_at).getTime()) / 60_000
+      if (minsAgoOutbound < 30) {
+        // Sync in-memory state to avoid future memory-based cooldown bypass
+        this._lastAiReplyTime.set(phoneKey, new Date(lastOutboundDB.created_at).getTime())
+        this.log(sessionPhone, `🤖 AI: ${phoneKey} — DB кулдаун (последнее сообщение ${Math.round(minsAgoOutbound)}м назад)`, 'warn')
+        return
+      }
     }
 
     this._replyInProgress.add(phoneKey)
@@ -723,30 +736,33 @@ export class Orchestrator {
           // Check last message direction
           const lastMsg = messages[messages.length - 1]
           if (lastMsg.direction !== 'inbound') {
-            // Our outbound is last — check if it's "stale" (sent 4+ hours ago, girl didn't reply)
+            // Our outbound is last — check if it's "stale" (sent 6+ hours ago, no reply)
             const lastTime = new Date(lastMsg.created_at).getTime()
             const hoursSince = (Date.now() - lastTime) / (1000 * 60 * 60)
-            if (hoursSince < 4) { skippedOutbound++; continue }  // too recent, wait for girl to reply
-            // Stale conversation — send ONE more follow-up nudge
-            // But limit to max 2 stale follow-ups per conversation
+            if (hoursSince < 6) { skippedOutbound++; continue }  // too recent, wait for reply
+            // Stale conversation — max 1 follow-up nudge only (was 3, now stricter)
             const outboundAfterLastInbound = []
             for (let i = messages.length - 1; i >= 0; i--) {
               if (messages[i].direction === 'outbound') outboundAfterLastInbound.push(messages[i])
               else break
             }
-            if (outboundAfterLastInbound.length >= 3) { skippedOutbound++; continue }  // already nudged enough, give up
+            if (outboundAfterLastInbound.length >= 2) { skippedOutbound++; continue }  // nudged once already, stop
           }
 
-          // Check for duplicate spam: if we sent same message 2+ times, skip (already damaged)
+          // Check for duplicate spam: if we sent same message OR link 2+ times, mark done & stop
           const ourMsgs = messages.filter(m => m.direction === 'outbound')
           const msgCounts = new Map()
           for (const m of ourMsgs) {
             const key = m.body?.toLowerCase().trim()
             if (key) msgCounts.set(key, (msgCounts.get(key) || 0) + 1)
           }
-          let hasDupes = false
-          for (const count of msgCounts.values()) {
-            if (count >= 2) { hasDupes = true; break }
+          // Also check: if we sent any message with site link 3+ times total, stop (link-spam guard)
+          const linkSpamCount = ourMsgs.filter(m => m.body?.toLowerCase().includes('tahles.top')).length
+          let hasDupes = linkSpamCount >= 3
+          if (!hasDupes) {
+            for (const count of msgCounts.values()) {
+              if (count >= 2) { hasDupes = true; break }
+            }
           }
           if (hasDupes) {
             skippedDupes++
