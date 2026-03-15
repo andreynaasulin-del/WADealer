@@ -520,21 +520,28 @@ export async function generateAutoReply(history, options = {}) {
         return null
       }
 
-      // HARD RULE: link tahles.top максимум 1 раз за ВЕСЬ диалог
-      // Если мы уже отправляли ссылку ранее — вырезаем её из нового сообщения
+      // Check if link was already sent in this conversation
       const linkAlreadySent = ourMessages.some(m =>
         m.body?.toLowerCase().includes('tahles.top') || m.body?.match(/https?:\/\/\S*tahles/i)
       )
+
       if (linkAlreadySent) {
+        // RULE: strip duplicate links (max 1 per conversation)
         const before = cleaned
         cleaned = cleaned.replace(/https?:\/\/\S+/gi, '').replace(/tahles\.top\S*/gi, '').replace(/\s{2,}/g, ' ').trim()
         if (before !== cleaned) {
           console.log(`[AI-INVITE] STRIPPED duplicate link (already sent once): "${before.substring(0, 80)}" → "${cleaned.substring(0, 80)}"`)
         }
-        // If stripping made it empty, replace with a nudge without link
         if (!cleaned || cleaned.replace(/[\s\p{Emoji}]/gu, '').length < 5) {
           cleaned = 'נו מה, נכנסת לראות? 😘'
           console.log(`[AI-INVITE] Replaced link-only dupe with nudge`)
+        }
+      } else {
+        // RULE: FORCE link insertion if AI forgot it and link not yet sent
+        const hasLink = cleaned.toLowerCase().includes('tahles.top') || cleaned.match(/https?:\/\/\S*tahles/i)
+        if (!hasLink) {
+          cleaned = cleaned.replace(/\s*$/, '') + ' 👉 ' + url
+          console.log(`[AI-INVITE] INJECTED missing link: "${cleaned.substring(0, 120)}"`)
         }
       }
 
