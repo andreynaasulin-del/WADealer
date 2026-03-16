@@ -548,10 +548,16 @@ export class TelegramSession extends EventEmitter {
         userId: user.userId,
         accessHash: BigInt(user.accessHash || '0'),
       })
-      await this.client.invoke(new Api.channels.InviteToChannel({
+      const result = await this.client.invoke(new Api.channels.InviteToChannel({
         channel: channelEntity,
         users: [inputUser],
       }))
+      // Check missingInvitees — Telegram returns this when user couldn't be added
+      const missing = result?.missingInvitees || []
+      if (missing.length > 0) {
+        const reason = missing[0]?.className || 'MISSING_INVITEE'
+        return { success: false, error: reason }
+      }
       return { success: true }
     } catch (err) {
       const msg = err.errorMessage || err.message || 'Unknown error'
