@@ -542,22 +542,49 @@ export class TelegramSession extends EventEmitter {
   async inviteToChannel(channel, user) {
     if (this.status !== 'active' || !this.client) throw new Error('Аккаунт не активен')
 
+    const inputUser = new Api.InputPeerUser({
+      userId: user.userId,
+      accessHash: BigInt(user.accessHash || '0'),
+    })
+
+    try {
+      // Step 1: Add as contact so USER_NOT_MUTUAL_CONTACT doesn't block invite
+      await this.client.invoke(new Api.contacts.AddContact({
+        id: inputUser,
+        firstName: user.firstName || '',
+        lastName: '',
+        phone: '',
+        addPhonePrivacyException: false,
+      }))
+    } catch (_) { /* ignore contact errors */ }
+
     try {
       const channelEntity = await this.client.getEntity(channel)
-      const inputUser = new Api.InputPeerUser({
-        userId: user.userId,
-        accessHash: BigInt(user.accessHash || '0'),
-      })
       const result = await this.client.invoke(new Api.channels.InviteToChannel({
         channel: channelEntity,
         users: [inputUser],
       }))
+
+      // Log raw result type for debugging
+      this.log(`InviteToChannel result: ${result?.className} updates=${result?.updates?.length ?? 'n/a'} missing=${JSON.stringify(result?.missingInvitees ?? [])}`, 'debug')
+
       // Check missingInvitees — Telegram returns this when user couldn't be added
       const missing = result?.missingInvitees || []
       if (missing.length > 0) {
         const reason = missing[0]?.className || 'MISSING_INVITEE'
         return { success: false, error: reason }
       }
+
+      // If updates array is empty, nobody was actually added
+      const updates = result?.updates || []
+      const wasAdded = updates.some(u =>
+        u?.className === 'UpdateChannel' || u?.className === 'UpdateChatParticipantAdd'
+        || u?.className === 'UpdateChannelParticipant'
+      )
+      if (!wasAdded && updates.length === 0) {
+        return { success: false, error: 'NO_UPDATES_RETURNED' }
+      }
+
       return { success: true }
     } catch (err) {
       const msg = err.errorMessage || err.message || 'Unknown error'
