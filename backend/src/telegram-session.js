@@ -640,13 +640,24 @@ export class TelegramSession extends EventEmitter {
   async inviteToChannel(channel, user) {
     if (this.status !== 'active' || !this.client) throw new Error('Аккаунт не активен')
 
-    const inputUser = new Api.InputPeerUser({
-      userId: user.userId,
-      accessHash: BigInt(user.accessHash || '0'),
-    })
+    // Resolve user — use username if available (access_hash is session-specific)
+    let inputUser
+    try {
+      if (user.username) {
+        const entity = await this.client.getEntity(user.username)
+        inputUser = new Api.InputPeerUser({ userId: entity.id, accessHash: entity.accessHash })
+      } else {
+        inputUser = new Api.InputPeerUser({
+          userId: user.userId,
+          accessHash: BigInt(user.accessHash || '0'),
+        })
+      }
+    } catch (err) {
+      return { success: false, error: 'CANNOT_RESOLVE_USER' }
+    }
 
     try {
-      // Step 1: Add as contact so USER_NOT_MUTUAL_CONTACT doesn't block invite
+      // Add as contact first
       await this.client.invoke(new Api.contacts.AddContact({
         id: inputUser,
         firstName: user.firstName || '',
@@ -654,7 +665,7 @@ export class TelegramSession extends EventEmitter {
         phone: '',
         addPhonePrivacyException: false,
       }))
-    } catch (_) { /* ignore contact errors */ }
+    } catch (_) { /* ignore */ }
 
     try {
       const channelEntity = await this.client.getEntity(channel)
@@ -663,24 +674,10 @@ export class TelegramSession extends EventEmitter {
         users: [inputUser],
       }))
 
-      // Deep debug: log full result structure
-      const updatesArr = Array.isArray(result?.updates) ? result.updates : []
-      const missingArr = Array.isArray(result?.missingInvitees) ? result.missingInvitees : []
-      const updateTypes = updatesArr.map(u => u?.className).join(',')
-      this.log(`INVITE_RESULT class=${result?.className} updates=[${updateTypes}] missing=${missingArr.length} keys=${Object.keys(result||{}).join(',')}`, 'warn')
-
       // Check missingInvitees
+      const missingArr = Array.isArray(result?.missingInvitees) ? result.missingInvitees : []
       if (missingArr.length > 0) {
         return { success: false, error: 'MISSING_INVITEE' }
-      }
-
-      // Confirm user was actually added by checking for UpdateChannelParticipant
-      const wasActuallyAdded = updatesArr.some(u =>
-        u?.className === 'UpdateChannelParticipant' || u?.className === 'UpdateChatParticipantAdd'
-      )
-      if (updatesArr.length > 0 && !wasActuallyAdded) {
-        this.log(`INVITE_NOT_ADDED: updates present but no participant update. Types: ${updateTypes}`, 'warn')
-        return { success: false, error: 'NOT_ADDED_SILENTLY' }
       }
 
       return { success: true }
