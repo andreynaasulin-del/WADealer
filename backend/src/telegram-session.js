@@ -437,7 +437,7 @@ export class TelegramSession extends EventEmitter {
    * Filters: skips bots and females (only keeps males + unknown gender).
    * @param {string|number} entity — group username or ID
    * @param {function} onBatch — callback(members[]) called for each batch of ~200
-   * @returns {{ total: number, skippedFemale: number, skippedBot: number }}
+   * @returns {{ total: number, skippedFemale: number, skippedBot: number, skippedInactive: number }}
    */
   async scrapeMembers(entity, onBatch) {
     if (this.status !== 'active' || !this.client) throw new Error('Аккаунт не активен')
@@ -445,14 +445,39 @@ export class TelegramSession extends EventEmitter {
     let total = 0
     let skippedFemale = 0
     let skippedBot = 0
+    let skippedInactive = 0
     let batch = []
     const BATCH_SIZE = 200
+    const FIVE_DAYS_SEC = 5 * 24 * 60 * 60
 
     try {
       for await (const participant of this.client.iterParticipants(entity, { limit: BATCH_SIZE })) {
         // Skip bots
         if (participant.bot) {
           skippedBot++
+          continue
+        }
+
+        // Skip inactive users (last seen > 5 days ago)
+        const status = participant.status
+        if (status) {
+          // UserStatusOffline has a wasOnline timestamp
+          if (status.className === 'UserStatusOffline' && status.wasOnline) {
+            const wasOnlineSec = typeof status.wasOnline === 'number' ? status.wasOnline : Math.floor(status.wasOnline / 1000)
+            const nowSec = Math.floor(Date.now() / 1000)
+            if ((nowSec - wasOnlineSec) > FIVE_DAYS_SEC) {
+              skippedInactive++
+              continue
+            }
+          }
+          // UserStatusLastWeek, UserStatusLastMonth, UserStatusEmpty — skip as inactive
+          if (['UserStatusLastWeek', 'UserStatusLastMonth', 'UserStatusEmpty'].includes(status.className)) {
+            skippedInactive++
+            continue
+          }
+        } else {
+          // No status at all — likely hidden/inactive, skip
+          skippedInactive++
           continue
         }
 
@@ -504,8 +529,8 @@ export class TelegramSession extends EventEmitter {
       }
     }
 
-    this.log(`Скрейп завершён: ${total} мужчин, пропущено ${skippedFemale} женщин, ${skippedBot} ботов`)
-    return { total, skippedFemale, skippedBot }
+    this.log(`Скрейп завершён: ${total} актив. мужчин, пропущено ${skippedFemale} жен., ${skippedBot} ботов, ${skippedInactive} неактивных (5+ дн)`)
+    return { total, skippedFemale, skippedBot, skippedInactive }
   }
 
   /**

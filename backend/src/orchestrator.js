@@ -1321,8 +1321,8 @@ export class Orchestrator {
         scraped_at: new Date().toISOString(),
         member_count: result.total || totalScraped,
       })
-      this.log(session.phone, `Спарсено ${totalScraped} муж. из ${group.title || group.link} (пропущено ${result.skippedFemale} жен., ${result.skippedBot} ботов)`, 'info', 'telegram')
-      this.broadcast({ type: 'tg_scrape_progress', groupId, status: 'scraped', scraped: totalScraped, skippedFemale: result.skippedFemale, skippedBot: result.skippedBot })
+      this.log(session.phone, `Спарсено ${totalScraped} актив. муж. из ${group.title || group.link} (пропущено ${result.skippedFemale} жен., ${result.skippedBot} ботов, ${result.skippedInactive || 0} неактивных)`, 'info', 'telegram')
+      this.broadcast({ type: 'tg_scrape_progress', groupId, status: 'scraped', scraped: totalScraped, skippedFemale: result.skippedFemale, skippedBot: result.skippedBot, skippedInactive: result.skippedInactive || 0 })
       return totalScraped
     } catch (err) {
       const msg = err.errorMessage || err.message || 'Scrape error'
@@ -1386,15 +1386,17 @@ export class Orchestrator {
   }
 
   /** Start inviting scraped members to target channel */
-  async startInviteJob(accountId, targetChannel, dailyLimit = 50) {
+  async startInviteJob(accountId, targetChannel, dailyLimit = 40) {
     const session = this.telegramAccounts.get(accountId)
     if (!session || session.status !== 'active') throw new Error('Аккаунт не активен')
 
-    this._inviteJob = { status: 'running', invited: 0, failed: 0, total: 0, accountId, targetChannel, dailyLimit }
+    this._inviteJob = { status: 'running', invited: 0, failed: 0, skipped: 0, total: 0, accountId, targetChannel, dailyLimit }
     this.broadcast({ type: 'tg_invite_progress', status: 'started' })
 
     let invited = 0
     let failed = 0
+    let skipped = 0
+    let consecutiveErrors = 0
 
     while (this._inviteJob?.status === 'running' && invited < dailyLimit) {
       const members = await db.dbGetPendingScrapedMembers(1)
@@ -1419,26 +1421,48 @@ export class Orchestrator {
       if (result.success) {
         await db.dbUpdateMemberInviteStatus(member.id, 'invited')
         invited++
+        consecutiveErrors = 0
         this.log(session.phone, `Приглашён ${member.username || member.user_id} [${invited}/${dailyLimit}]`, 'info', 'telegram')
       } else {
-        await db.dbUpdateMemberInviteStatus(member.id, result.error === 'USER_PRIVACY_RESTRICTED' ? 'skipped' : 'failed', result.error)
-        failed++
+        const isPrivacy = result.error === 'USER_PRIVACY_RESTRICTED' || result.error === 'USER_NOT_MUTUAL_CONTACT'
+        await db.dbUpdateMemberInviteStatus(member.id, isPrivacy ? 'skipped' : 'failed', result.error)
+        if (isPrivacy) {
+          skipped++
+        } else {
+          failed++
+          consecutiveErrors++
+        }
+        // Safety: 5 non-privacy errors in a row — stop to protect account
+        if (consecutiveErrors >= 5) {
+          this.log(session.phone, `5 ошибок подряд — останавливаемся для защиты аккаунта`, 'error', 'telegram')
+          this._inviteJob.status = 'error_limit'
+          break
+        }
       }
 
       this._inviteJob.invited = invited
       this._inviteJob.failed = failed
-      this.broadcast({ type: 'tg_invite_progress', status: 'running', invited, failed, dailyLimit })
+      this._inviteJob.skipped = skipped
+      this.broadcast({ type: 'tg_invite_progress', status: 'running', invited, failed, skipped, dailyLimit })
 
       // Human-like delay: 30-90s between invites
       if (this._inviteJob?.status === 'running') {
         const delay = 30000 + Math.random() * 60000
+        this.log(session.phone, `Пауза ${Math.round(delay/1000)}с...`, 'debug', 'telegram')
         await new Promise(r => setTimeout(r, delay))
+      }
+
+      // Extra break every 5 successful invites: 3-5 min pause
+      if (invited > 0 && invited % 5 === 0 && this._inviteJob?.status === 'running') {
+        const breakTime = 180000 + Math.random() * 120000
+        this.log(session.phone, `Перерыв ${Math.round(breakTime/1000)}с после ${invited} инвайтов...`, 'info', 'telegram')
+        await new Promise(r => setTimeout(r, breakTime))
       }
     }
 
     if (this._inviteJob?.status === 'running') this._inviteJob.status = 'completed'
-    this.broadcast({ type: 'tg_invite_progress', status: this._inviteJob?.status || 'completed', invited, failed })
-    return { invited, failed, status: this._inviteJob?.status }
+    this.broadcast({ type: 'tg_invite_progress', status: this._inviteJob?.status || 'completed', invited, failed, skipped })
+    return { invited, failed, skipped, status: this._inviteJob?.status }
   }
 
   stopInviteJob() {
