@@ -233,6 +233,7 @@ export class TelegramSession extends EventEmitter {
 
   /**
    * QR Code login — generates a QR code the user can scan with their phone.
+   * Uses GramJS signInUserWithQrCode which handles the full flow.
    * Returns { status: 'qr_pending', qr_data_url: 'data:image/png;base64,...' }
    */
   async requestQrLogin() {
@@ -246,37 +247,10 @@ export class TelegramSession extends EventEmitter {
     )
     await this.client.connect()
 
-    const genQr = async () => {
-      const result = await this.client.invoke(new Api.auth.ExportLoginToken({
-        apiId: getApiId(),
-        apiHash: getApiHash(),
-        exceptIds: [],
-      }))
-
-      if (result.className === 'auth.LoginTokenSuccess') {
-        return { done: true, result }
-      }
-
-      if (result.className === 'auth.LoginTokenMigrateTo') {
-        // Need to reconnect to different DC
-        await this.client._switchDC(result.dcId)
-        return genQr()
-      }
-
-      // auth.LoginToken — has token to show as QR
-      const tokenBase64 = Buffer.from(result.token).toString('base64url')
-      const qrUrl = `tg://login?token=${tokenBase64}`
-      const qrDataUrl = await QRCode.toDataURL(qrUrl, { width: 256, margin: 2, color: { dark: '#ffffff', light: '#00000000' } })
-      return { done: false, qrDataUrl, expires: result.expires }
-    }
-
-    const qr = await genQr()
-    if (qr.done) {
-      return this._finishAuth()
-    }
+    // Generate initial QR to return immediately
+    let firstQrDataUrl = null
 
     this.status = 'qr_pending'
-    this._qrExpires = qr.expires
     await this.orchestrator.db.dbUpdateTelegramAccountStatus(this.id, 'qr_pending')
     this.orchestrator.broadcast({
       type: 'tg_account_update',
@@ -284,34 +258,29 @@ export class TelegramSession extends EventEmitter {
       status: 'qr_pending',
     })
 
-    // Start polling in background — check every 3 seconds if QR was scanned
-    this._qrPollInterval = setInterval(async () => {
-      try {
-        const result = await this.client.invoke(new Api.auth.ExportLoginToken({
-          apiId: getApiId(),
-          apiHash: getApiHash(),
-          exceptIds: [],
-        }))
+    // Run signInUserWithQrCode in background — it blocks until auth completes
+    const authPromise = this.client.signInUserWithQrCode(
+      { apiId: getApiId(), apiHash: getApiHash() },
+      {
+        qrCode: async (token) => {
+          // Called each time a new QR token is generated
+          const tokenBase64 = Buffer.from(token.token).toString('base64url')
+          const qrUrl = `tg://login?token=${tokenBase64}`
+          const qrDataUrl = await QRCode.toDataURL(qrUrl, { width: 256, margin: 2, color: { dark: '#ffffff', light: '#00000000' } })
 
-        if (result.className === 'auth.LoginTokenSuccess') {
-          clearInterval(this._qrPollInterval)
-          this._qrPollInterval = null
-          await this._finishAuth()
-        } else if (result.className === 'auth.LoginTokenMigrateTo') {
-          clearInterval(this._qrPollInterval)
-          this._qrPollInterval = null
-          await this.client._switchDC(result.dcId)
-          const retry = await this.client.invoke(new Api.auth.ExportLoginToken({
-            apiId: getApiId(), apiHash: getApiHash(), exceptIds: [],
-          }))
-          if (retry.className === 'auth.LoginTokenSuccess') {
-            await this._finishAuth()
+          if (!firstQrDataUrl) {
+            firstQrDataUrl = qrDataUrl
           }
-        }
-      } catch (err) {
-        if (err.errorMessage === 'SESSION_PASSWORD_NEEDED') {
-          clearInterval(this._qrPollInterval)
-          this._qrPollInterval = null
+
+          // Broadcast updated QR to frontend via WebSocket
+          this.orchestrator.broadcast({
+            type: 'tg_qr_update',
+            accountId: this.id,
+            qr_data_url: qrDataUrl,
+          })
+        },
+        password: async (hint) => {
+          // 2FA required — set status and wait for user to enter password
           this.status = 'awaiting_password'
           this.log('QR отсканирован, требуется 2FA пароль')
           await this.orchestrator.db.dbUpdateTelegramAccountStatus(this.id, 'awaiting_password')
@@ -320,25 +289,36 @@ export class TelegramSession extends EventEmitter {
             accountId: this.id,
             status: 'awaiting_password',
           })
-        }
-        // Otherwise keep polling
-      }
-    }, 3000)
 
-    // Stop polling after 60 seconds
-    setTimeout(() => {
-      if (this._qrPollInterval) {
-        clearInterval(this._qrPollInterval)
-        this._qrPollInterval = null
-        if (this.status === 'qr_pending') {
-          this.status = 'error'
-          this.orchestrator.db.dbUpdateTelegramAccountStatus(this.id, 'error', 'QR expired')
-          this.orchestrator.broadcast({ type: 'tg_account_update', accountId: this.id, status: 'error', error_msg: 'QR expired' })
-        }
+          // Wait for password to be provided via verifyPassword()
+          return new Promise((resolve) => {
+            this._resolveQrPassword = resolve
+          })
+        },
+        onError: (err) => {
+          this.log(`QR auth error: ${err.message}`, 'error')
+          return true // keep retrying
+        },
       }
-    }, 60000)
+    )
 
-    return { status: 'qr_pending', qr_data_url: qr.qrDataUrl }
+    // Handle auth completion in background
+    authPromise.then(async () => {
+      await this._finishAuth()
+    }).catch(async (err) => {
+      const msg = err.errorMessage || err.message || 'QR auth failed'
+      this.status = 'error'
+      this.log(`QR auth error: ${msg}`, 'error')
+      await this.orchestrator.db.dbUpdateTelegramAccountStatus(this.id, 'error', msg)
+      this.orchestrator.broadcast({ type: 'tg_account_update', accountId: this.id, status: 'error', error_msg: msg })
+    })
+
+    // Wait up to 5 seconds for first QR to generate
+    for (let i = 0; i < 50 && !firstQrDataUrl; i++) {
+      await new Promise(r => setTimeout(r, 100))
+    }
+
+    return { status: 'qr_pending', qr_data_url: firstQrDataUrl }
   }
 
   /**
@@ -380,6 +360,13 @@ export class TelegramSession extends EventEmitter {
    * Verify 2FA password (if SESSION_PASSWORD_NEEDED was received).
    */
   async verifyPassword(password) {
+    // If QR login flow is waiting for password, resolve the promise
+    if (this._resolveQrPassword) {
+      this._resolveQrPassword(password)
+      this._resolveQrPassword = null
+      return { status: 'verifying_password' }
+    }
+
     try {
       const passwordData = await this.client.invoke(new Api.account.GetPassword())
       const passwordCheck = await computeCheck(passwordData, password)
