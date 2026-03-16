@@ -218,6 +218,36 @@ export const api = {
     stats: {
       get: () => req<TelegramStats>('/telegram/stats'),
     },
+    sourceGroups: {
+      list: () => req<SourceGroup[]>('/telegram/source-groups'),
+      add: (links: string[]) =>
+        req<SourceGroup[]>('/telegram/source-groups', { method: 'POST', body: JSON.stringify({ links }) }),
+      remove: (id: string) =>
+        req<void>(`/telegram/source-groups/${id}`, { method: 'DELETE' }),
+    },
+    scrape: {
+      start: (accountId: string, groupId?: string) =>
+        req<{ ok: boolean }>('/telegram/scrape/start', {
+          method: 'POST', body: JSON.stringify({ account_id: accountId, group_id: groupId }),
+        }),
+      stop: () => req<{ ok: boolean }>('/telegram/scrape/stop', { method: 'POST', body: '{}' }),
+      status: () => req<ScrapeStatus>('/telegram/scrape/status'),
+    },
+    scrapedMembers: {
+      list: (params?: { invite_status?: string; limit?: number; offset?: number }) => {
+        const qs = new URLSearchParams(params as Record<string, string>).toString()
+        return req<{ data: ScrapedMember[]; count: number }>(`/telegram/scraped-members${qs ? `?${qs}` : ''}`)
+      },
+      stats: () => req<ScrapedMembersStats>('/telegram/scraped-members/stats'),
+    },
+    invite: {
+      start: (accountId: string, targetChannel: string, dailyLimit?: number) =>
+        req<{ ok: boolean }>('/telegram/invite/start', {
+          method: 'POST', body: JSON.stringify({ account_id: accountId, target_channel: targetChannel, daily_limit: dailyLimit }),
+        }),
+      stop: () => req<{ ok: boolean }>('/telegram/invite/stop', { method: 'POST', body: '{}' }),
+      status: () => req<InviteStatus>('/telegram/invite/status'),
+    },
   },
 }
 
@@ -355,6 +385,56 @@ export interface TelegramStats {
   errors: number
   queue_status?: string
   queue_size?: number
+}
+
+export interface SourceGroup {
+  id: string
+  link: string
+  username: string | null
+  invite_hash: string | null
+  title: string | null
+  member_count: number | null
+  joined: boolean
+  scraped_at: string | null
+  status: 'pending' | 'joined' | 'scraping' | 'scraped' | 'error'
+  error_msg: string | null
+  created_at: string
+}
+
+export interface ScrapedMember {
+  id: string
+  user_id: number
+  username: string | null
+  first_name: string | null
+  last_name: string | null
+  access_hash: string | null
+  source_group_id: string | null
+  is_bot: boolean
+  invite_status: 'pending' | 'invited' | 'failed' | 'skipped'
+  invite_error: string | null
+  invited_at: string | null
+  created_at: string
+}
+
+export interface ScrapedMembersStats {
+  pending: number
+  invited: number
+  failed: number
+  skipped: number
+  total: number
+}
+
+export interface ScrapeStatus {
+  status: 'idle' | 'running' | 'completed' | 'stopped'
+  progress?: number
+  total?: number
+}
+
+export interface InviteStatus {
+  status: 'idle' | 'running' | 'completed' | 'stopped' | 'rate_limited'
+  invited?: number
+  failed?: number
+  dailyLimit?: number
 }
 
 export interface FeedLead {

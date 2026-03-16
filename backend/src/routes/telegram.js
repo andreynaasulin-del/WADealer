@@ -206,4 +206,124 @@ export default async function telegramRoutes(fastify) {
     stats.queue_size = orchestrator.telegramQueue?.size || 0
     return reply.send(stats)
   })
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // SOURCE GROUPS (scrape targets)
+  // ══════════════════════════════════════════════════════════════════════════
+
+  fastify.get('/api/telegram/source-groups', async (req, reply) => {
+    const groups = await db.dbGetAllSourceGroups()
+    return reply.send(groups)
+  })
+
+  fastify.post('/api/telegram/source-groups', {
+    schema: {
+      body: {
+        type: 'object',
+        required: ['links'],
+        properties: {
+          links: { type: 'array', items: { type: 'string' } },
+        },
+      },
+    },
+  }, async (req, reply) => {
+    const groups = await orchestrator.addSourceGroups(req.body.links)
+    return reply.code(201).send(groups)
+  })
+
+  fastify.delete('/api/telegram/source-groups/:id', async (req, reply) => {
+    await db.dbDeleteSourceGroup(req.params.id)
+    return reply.code(204).send()
+  })
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // SCRAPE CONTROL
+  // ══════════════════════════════════════════════════════════════════════════
+
+  fastify.post('/api/telegram/scrape/start', {
+    schema: {
+      body: {
+        type: 'object',
+        required: ['account_id'],
+        properties: {
+          account_id: { type: 'string' },
+          group_id:   { type: 'string' },
+        },
+      },
+    },
+  }, async (req, reply) => {
+    const { account_id, group_id } = req.body
+    // Run async — don't block the request
+    if (group_id) {
+      orchestrator.scrapeGroup(group_id, account_id).catch(err => {
+        orchestrator.log(null, `Scrape error: ${err.message}`, 'error', 'telegram')
+      })
+    } else {
+      orchestrator.scrapeAllGroups(account_id).catch(err => {
+        orchestrator.log(null, `Scrape all error: ${err.message}`, 'error', 'telegram')
+      })
+    }
+    return reply.send({ ok: true })
+  })
+
+  fastify.post('/api/telegram/scrape/stop', async (req, reply) => {
+    orchestrator.stopScrapeJob()
+    return reply.send({ ok: true })
+  })
+
+  fastify.get('/api/telegram/scrape/status', async (req, reply) => {
+    return reply.send(orchestrator.getScrapeStatus())
+  })
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // SCRAPED MEMBERS
+  // ══════════════════════════════════════════════════════════════════════════
+
+  fastify.get('/api/telegram/scraped-members', async (req, reply) => {
+    const { invite_status, limit, offset } = req.query
+    const result = await db.dbGetScrapedMembers({
+      invite_status,
+      limit: limit ? parseInt(limit) : 50,
+      offset: offset ? parseInt(offset) : 0,
+    })
+    return reply.send(result)
+  })
+
+  fastify.get('/api/telegram/scraped-members/stats', async (req, reply) => {
+    const stats = await db.dbGetScrapedMembersStats()
+    return reply.send(stats)
+  })
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // INVITE CONTROL
+  // ══════════════════════════════════════════════════════════════════════════
+
+  fastify.post('/api/telegram/invite/start', {
+    schema: {
+      body: {
+        type: 'object',
+        required: ['account_id', 'target_channel'],
+        properties: {
+          account_id:     { type: 'string' },
+          target_channel: { type: 'string' },
+          daily_limit:    { type: 'number', minimum: 1, default: 50 },
+        },
+      },
+    },
+  }, async (req, reply) => {
+    const { account_id, target_channel, daily_limit } = req.body
+    orchestrator.startInviteJob(account_id, target_channel, daily_limit || 50).catch(err => {
+      orchestrator.log(null, `Invite error: ${err.message}`, 'error', 'telegram')
+    })
+    return reply.send({ ok: true })
+  })
+
+  fastify.post('/api/telegram/invite/stop', async (req, reply) => {
+    orchestrator.stopInviteJob()
+    return reply.send({ ok: true })
+  })
+
+  fastify.get('/api/telegram/invite/status', async (req, reply) => {
+    return reply.send(orchestrator.getInviteStatus())
+  })
 }

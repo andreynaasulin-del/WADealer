@@ -254,6 +254,163 @@ export class TelegramSession extends EventEmitter {
     })
   }
 
+  // ─── Group scraping & invite methods ──────────────────────────────────────
+
+  /**
+   * Join a Telegram group/channel by link.
+   * Supports both public (t.me/username) and private (t.me/+HASH) links.
+   * @returns {{ title: string, id: BigInt, participantsCount: number }}
+   */
+  async joinGroup(link) {
+    if (this.status !== 'active' || !this.client) throw new Error('Аккаунт не активен')
+
+    // Parse link type
+    const inviteMatch = link.match(/t\.me\/\+([a-zA-Z0-9_-]+)/) || link.match(/t\.me\/joinchat\/([a-zA-Z0-9_-]+)/)
+    const usernameMatch = !inviteMatch && link.match(/t\.me\/([a-zA-Z0-9_]+)/)
+
+    let result
+    try {
+      if (inviteMatch) {
+        const hash = inviteMatch[1]
+        result = await this.client.invoke(new Api.messages.ImportChatInvite({ hash }))
+      } else if (usernameMatch) {
+        const username = usernameMatch[1]
+        result = await this.client.invoke(new Api.channels.JoinChannel({
+          channel: username,
+        }))
+      } else {
+        throw new Error(`Невалидная ссылка: ${link}`)
+      }
+    } catch (err) {
+      // Already a participant — not an error
+      if (err.errorMessage === 'USER_ALREADY_PARTICIPANT' || err.errorMessage === 'INVITE_REQUEST_SENT') {
+        this.log(`Уже в группе: ${link}`)
+      } else if (err.errorMessage?.startsWith('FLOOD_WAIT')) {
+        const seconds = parseInt(err.errorMessage.split('_').pop()) || err.seconds || 60
+        this.log(`FloodWait ${seconds}с при вступлении в ${link}`, 'warn')
+        await new Promise(r => setTimeout(r, seconds * 1000))
+        return this.joinGroup(link) // retry once
+      } else {
+        throw err
+      }
+    }
+
+    // Resolve entity to get info
+    try {
+      const entity = usernameMatch
+        ? await this.client.getEntity(usernameMatch[1])
+        : await this.client.getEntity(result?.chats?.[0]?.id || link)
+      return {
+        title: entity.title || entity.username || '?',
+        id: entity.id,
+        participantsCount: entity.participantsCount || 0,
+      }
+    } catch {
+      return { title: '?', id: null, participantsCount: 0 }
+    }
+  }
+
+  /**
+   * Scrape members from a group/channel.
+   * @param {string|number} entity — group username or ID
+   * @param {function} onBatch — callback(members[]) called for each batch of ~200
+   * @returns {number} total scraped
+   */
+  async scrapeMembers(entity, onBatch) {
+    if (this.status !== 'active' || !this.client) throw new Error('Аккаунт не активен')
+
+    let total = 0
+    let batch = []
+    const BATCH_SIZE = 200
+
+    try {
+      for await (const participant of this.client.iterParticipants(entity, { limit: BATCH_SIZE })) {
+        batch.push({
+          userId: typeof participant.id === 'bigint' ? Number(participant.id) : participant.id,
+          accessHash: participant.accessHash ? String(participant.accessHash) : null,
+          username: participant.username || null,
+          firstName: participant.firstName || null,
+          lastName: participant.lastName || null,
+          phone: participant.phone || null,
+          isBot: participant.bot || false,
+        })
+
+        if (batch.length >= BATCH_SIZE) {
+          await onBatch(batch)
+          total += batch.length
+          batch = []
+        }
+      }
+
+      // Flush remaining
+      if (batch.length > 0) {
+        await onBatch(batch)
+        total += batch.length
+      }
+    } catch (err) {
+      if (err.errorMessage?.startsWith('FLOOD_WAIT')) {
+        const seconds = parseInt(err.errorMessage.split('_').pop()) || err.seconds || 60
+        this.log(`FloodWait ${seconds}с при скрейпе — ждём...`, 'warn')
+        await new Promise(r => setTimeout(r, seconds * 1000))
+        // Flush what we have so far
+        if (batch.length > 0) {
+          await onBatch(batch)
+          total += batch.length
+        }
+      } else {
+        // Flush and re-throw
+        if (batch.length > 0) {
+          await onBatch(batch)
+          total += batch.length
+        }
+        throw err
+      }
+    }
+
+    return total
+  }
+
+  /**
+   * Invite a single user to a channel.
+   * @param {string|number} channel — target channel username or ID
+   * @param {{ userId: number, accessHash: string }} user
+   * @returns {{ success: boolean, error?: string, rateLimited?: boolean }}
+   */
+  async inviteToChannel(channel, user) {
+    if (this.status !== 'active' || !this.client) throw new Error('Аккаунт не активен')
+
+    try {
+      const channelEntity = await this.client.getEntity(channel)
+      const inputUser = new Api.InputPeerUser({
+        userId: user.userId,
+        accessHash: BigInt(user.accessHash || '0'),
+      })
+      await this.client.invoke(new Api.channels.InviteToChannel({
+        channel: channelEntity,
+        users: [inputUser],
+      }))
+      return { success: true }
+    } catch (err) {
+      const msg = err.errorMessage || err.message || 'Unknown error'
+
+      if (msg === 'USER_PRIVACY_RESTRICTED' || msg === 'USER_NOT_MUTUAL_CONTACT'
+          || msg === 'USER_CHANNELS_TOO_MUCH' || msg === 'USER_KICKED') {
+        return { success: false, error: msg }
+      }
+      if (msg === 'PEER_FLOOD' || msg === 'PeerFloodError') {
+        this.log('PeerFlood — лимит инвайтов на сегодня!', 'error')
+        return { success: false, error: 'PEER_FLOOD', rateLimited: true }
+      }
+      if (msg.startsWith('FLOOD_WAIT')) {
+        const seconds = parseInt(msg.split('_').pop()) || err.seconds || 300
+        this.log(`FloodWait ${seconds}с при инвайте`, 'warn')
+        await new Promise(r => setTimeout(r, seconds * 1000))
+        return this.inviteToChannel(channel, user) // retry
+      }
+      return { success: false, error: msg }
+    }
+  }
+
   /**
    * Get account state for API response.
    */

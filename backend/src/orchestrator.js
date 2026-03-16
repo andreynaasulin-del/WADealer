@@ -1270,6 +1270,177 @@ export class Orchestrator {
     this.telegramQueue.clear()
     this.broadcast({ type: 'tg_campaign_update', campaignId, status: 'stopped' })
   }
+
+  // ─── TG Group Scraping & Invite ─────────────────────────────────────────────
+
+  /** Add source groups from a list of t.me links */
+  async addSourceGroups(links) {
+    return db.dbCreateSourceGroups(links)
+  }
+
+  /** Scrape a single source group */
+  async scrapeGroup(groupId, accountId) {
+    const groups = await db.dbGetAllSourceGroups()
+    const group = groups.find(g => g.id === groupId)
+    if (!group) throw new Error('Группа не найдена')
+
+    const session = this.telegramAccounts.get(accountId)
+    if (!session || session.status !== 'active') throw new Error('Аккаунт не активен')
+
+    // Update status
+    await db.dbUpdateSourceGroup(groupId, { status: 'joined' })
+    this.broadcast({ type: 'tg_scrape_progress', groupId, status: 'joining' })
+
+    // Join
+    try {
+      const info = await session.joinGroup(group.link)
+      await db.dbUpdateSourceGroup(groupId, {
+        joined: true,
+        title: info.title,
+        member_count: info.participantsCount || 0,
+        status: 'scraping',
+      })
+      this.log(session.phone, `Вступил в ${info.title} (${info.participantsCount} участников)`, 'info', 'telegram')
+      this.broadcast({ type: 'tg_scrape_progress', groupId, status: 'scraping', title: info.title, memberCount: info.participantsCount })
+
+      // Scrape members
+      const entity = group.username || info.id
+      let totalScraped = 0
+      const count = await session.scrapeMembers(entity, async (batch) => {
+        const inserted = await db.dbUpsertScrapedMembers(groupId, batch)
+        totalScraped += batch.length
+        this.broadcast({ type: 'tg_scrape_progress', groupId, status: 'scraping', scraped: totalScraped })
+      })
+
+      await db.dbUpdateSourceGroup(groupId, {
+        status: 'scraped',
+        scraped_at: new Date().toISOString(),
+        member_count: count || totalScraped,
+      })
+      this.log(session.phone, `Спарсено ${totalScraped} из ${group.title || group.link}`, 'info', 'telegram')
+      this.broadcast({ type: 'tg_scrape_progress', groupId, status: 'scraped', scraped: totalScraped })
+      return totalScraped
+    } catch (err) {
+      const msg = err.errorMessage || err.message || 'Scrape error'
+      await db.dbUpdateSourceGroup(groupId, { status: 'error', error_msg: msg })
+      this.log(session.phone, `Ошибка парсинга ${group.link}: ${msg}`, 'error', 'telegram')
+      this.broadcast({ type: 'tg_scrape_progress', groupId, status: 'error', error: msg })
+      throw err
+    }
+  }
+
+  /** Scrape all pending/joined source groups */
+  async scrapeAllGroups(accountId) {
+    const session = this.telegramAccounts.get(accountId)
+    if (!session || session.status !== 'active') throw new Error('Аккаунт не активен')
+
+    const groups = await db.dbGetAllSourceGroups()
+    const toScrape = groups.filter(g => g.status === 'pending' || g.status === 'joined' || g.status === 'error')
+
+    this._scrapeJob = { status: 'running', progress: 0, total: toScrape.length, accountId }
+    this.broadcast({ type: 'tg_scrape_progress', status: 'started', total: toScrape.length })
+
+    let completed = 0
+    for (const group of toScrape) {
+      if (this._scrapeJob?.status === 'stopped') break
+
+      try {
+        await this.scrapeGroup(group.id, accountId)
+      } catch (err) {
+        // Continue to next group on error
+        this.log(session.phone, `Пропуск ${group.link}: ${err.message}`, 'warn', 'telegram')
+      }
+
+      completed++
+      this._scrapeJob.progress = completed
+      this.broadcast({ type: 'tg_scrape_progress', status: 'running', progress: completed, total: toScrape.length })
+
+      // Delay between groups (30-60s)
+      if (completed < toScrape.length && this._scrapeJob?.status === 'running') {
+        const delay = 30000 + Math.random() * 30000
+        this.log(session.phone, `Пауза ${Math.round(delay / 1000)}с перед следующей группой...`, 'info', 'telegram')
+        await new Promise(r => setTimeout(r, delay))
+      }
+    }
+
+    const stats = await db.dbGetScrapedMembersStats()
+    this._scrapeJob = { status: 'completed', progress: completed, total: toScrape.length }
+    this.broadcast({ type: 'tg_scrape_progress', status: 'completed', progress: completed, total: toScrape.length, stats })
+    this.log(session.phone, `Парсинг завершён: ${completed}/${toScrape.length} групп, ${stats.total} уникальных участников`, 'info', 'telegram')
+    return stats
+  }
+
+  stopScrapeJob() {
+    if (this._scrapeJob) this._scrapeJob.status = 'stopped'
+  }
+
+  /** Start inviting scraped members to target channel */
+  async startInviteJob(accountId, targetChannel, dailyLimit = 50) {
+    const session = this.telegramAccounts.get(accountId)
+    if (!session || session.status !== 'active') throw new Error('Аккаунт не активен')
+
+    this._inviteJob = { status: 'running', invited: 0, failed: 0, total: 0, accountId, targetChannel, dailyLimit }
+    this.broadcast({ type: 'tg_invite_progress', status: 'started' })
+
+    let invited = 0
+    let failed = 0
+
+    while (this._inviteJob?.status === 'running' && invited < dailyLimit) {
+      const members = await db.dbGetPendingScrapedMembers(1)
+      if (members.length === 0) {
+        this.log(session.phone, 'Все участники обработаны!', 'info', 'telegram')
+        break
+      }
+
+      const member = members[0]
+      const result = await session.inviteToChannel(targetChannel, {
+        userId: member.user_id,
+        accessHash: member.access_hash,
+      })
+
+      if (result.rateLimited) {
+        await db.dbUpdateMemberInviteStatus(member.id, 'failed', 'PEER_FLOOD')
+        this.log(session.phone, `PeerFlood — лимит инвайтов! Приглашено: ${invited}`, 'error', 'telegram')
+        this._inviteJob.status = 'rate_limited'
+        break
+      }
+
+      if (result.success) {
+        await db.dbUpdateMemberInviteStatus(member.id, 'invited')
+        invited++
+        this.log(session.phone, `Приглашён ${member.username || member.user_id} [${invited}/${dailyLimit}]`, 'info', 'telegram')
+      } else {
+        await db.dbUpdateMemberInviteStatus(member.id, result.error === 'USER_PRIVACY_RESTRICTED' ? 'skipped' : 'failed', result.error)
+        failed++
+      }
+
+      this._inviteJob.invited = invited
+      this._inviteJob.failed = failed
+      this.broadcast({ type: 'tg_invite_progress', status: 'running', invited, failed, dailyLimit })
+
+      // Human-like delay: 30-90s between invites
+      if (this._inviteJob?.status === 'running') {
+        const delay = 30000 + Math.random() * 60000
+        await new Promise(r => setTimeout(r, delay))
+      }
+    }
+
+    if (this._inviteJob?.status === 'running') this._inviteJob.status = 'completed'
+    this.broadcast({ type: 'tg_invite_progress', status: this._inviteJob?.status || 'completed', invited, failed })
+    return { invited, failed, status: this._inviteJob?.status }
+  }
+
+  stopInviteJob() {
+    if (this._inviteJob) this._inviteJob.status = 'stopped'
+  }
+
+  getScrapeStatus() {
+    return this._scrapeJob || { status: 'idle' }
+  }
+
+  getInviteStatus() {
+    return this._inviteJob || { status: 'idle' }
+  }
 }
 
 // Singleton

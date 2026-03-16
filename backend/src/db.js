@@ -974,4 +974,134 @@ export async function dbGetLeadById(leadId) {
   return data
 }
 
+// ─── TG Source Groups (scrape targets) ───────────────────────────────────────
+
+function _parseGroupLink(link) {
+  const trimmed = link.trim().replace(/\s+/g, '')
+  // Private invite link: t.me/+HASH or t.me/joinchat/HASH
+  const inviteMatch = trimmed.match(/t\.me\/\+([a-zA-Z0-9_-]+)/) || trimmed.match(/t\.me\/joinchat\/([a-zA-Z0-9_-]+)/)
+  if (inviteMatch) return { link: trimmed, invite_hash: inviteMatch[1], username: null }
+  // Public group: t.me/username
+  const usernameMatch = trimmed.match(/t\.me\/([a-zA-Z0-9_]+)/)
+  if (usernameMatch) return { link: trimmed, username: usernameMatch[1], invite_hash: null }
+  return { link: trimmed, username: null, invite_hash: null }
+}
+
+export async function dbGetAllSourceGroups() {
+  const { data, error } = await supabase
+    .from('tg_source_groups')
+    .select('*')
+    .order('created_at', { ascending: true })
+  if (error) throw error
+  return data || []
+}
+
+export async function dbCreateSourceGroups(links) {
+  const rows = links.map(l => _parseGroupLink(l))
+  const { data, error } = await supabase
+    .from('tg_source_groups')
+    .upsert(rows, { onConflict: 'link' })
+    .select()
+  if (error) throw error
+  return data || []
+}
+
+export async function dbUpdateSourceGroup(id, updates) {
+  const { data, error } = await supabase
+    .from('tg_source_groups')
+    .update(updates)
+    .eq('id', id)
+    .select()
+    .single()
+  if (error) throw error
+  return data
+}
+
+export async function dbDeleteSourceGroup(id) {
+  const { error } = await supabase
+    .from('tg_source_groups')
+    .delete()
+    .eq('id', id)
+  if (error) throw error
+}
+
+// ─── TG Scraped Members ─────────────────────────────────────────────────────
+
+export async function dbUpsertScrapedMembers(groupId, members) {
+  if (!members.length) return 0
+  const rows = members.map(m => ({
+    user_id: m.userId,
+    username: m.username || null,
+    first_name: m.firstName || null,
+    last_name: m.lastName || null,
+    access_hash: m.accessHash ? String(m.accessHash) : null,
+    source_group_id: groupId,
+    is_bot: m.isBot || false,
+  }))
+  // Batch upsert in chunks of 500
+  let inserted = 0
+  for (let i = 0; i < rows.length; i += 500) {
+    const chunk = rows.slice(i, i + 500)
+    const { error, count } = await supabase
+      .from('tg_scraped_members')
+      .upsert(chunk, { onConflict: 'user_id', ignoreDuplicates: false })
+    if (error) console.error('[DB] upsert scraped members error:', error.message)
+    else inserted += chunk.length
+  }
+  return inserted
+}
+
+export async function dbGetScrapedMembers({ invite_status, limit = 50, offset = 0 } = {}) {
+  let query = supabase
+    .from('tg_scraped_members')
+    .select('*', { count: 'exact' })
+    .eq('is_bot', false)
+    .order('created_at', { ascending: true })
+    .range(offset, offset + limit - 1)
+  if (invite_status) query = query.eq('invite_status', invite_status)
+  const { data, count, error } = await query
+  if (error) throw error
+  return { data: data || [], count: count || 0 }
+}
+
+export async function dbGetScrapedMembersStats() {
+  const [pending, invited, failed, skipped, total] = await Promise.all([
+    supabase.from('tg_scraped_members').select('id', { count: 'exact', head: true }).eq('invite_status', 'pending').eq('is_bot', false),
+    supabase.from('tg_scraped_members').select('id', { count: 'exact', head: true }).eq('invite_status', 'invited'),
+    supabase.from('tg_scraped_members').select('id', { count: 'exact', head: true }).eq('invite_status', 'failed'),
+    supabase.from('tg_scraped_members').select('id', { count: 'exact', head: true }).eq('invite_status', 'skipped'),
+    supabase.from('tg_scraped_members').select('id', { count: 'exact', head: true }).eq('is_bot', false),
+  ])
+  return {
+    pending: pending.count || 0,
+    invited: invited.count || 0,
+    failed: failed.count || 0,
+    skipped: skipped.count || 0,
+    total: total.count || 0,
+  }
+}
+
+export async function dbUpdateMemberInviteStatus(id, status, error_msg) {
+  const updates = { invite_status: status }
+  if (status === 'invited') updates.invited_at = new Date().toISOString()
+  if (error_msg) updates.invite_error = error_msg
+  const { error } = await supabase
+    .from('tg_scraped_members')
+    .update(updates)
+    .eq('id', id)
+  if (error) throw error
+}
+
+export async function dbGetPendingScrapedMembers(limit = 50) {
+  const { data, error } = await supabase
+    .from('tg_scraped_members')
+    .select('*')
+    .eq('invite_status', 'pending')
+    .eq('is_bot', false)
+    .order('created_at', { ascending: true })
+    .limit(limit)
+  if (error) throw error
+  return data || []
+}
+
 export default supabase

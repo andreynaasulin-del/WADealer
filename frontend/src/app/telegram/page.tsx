@@ -6,6 +6,7 @@ import { useAuth } from '@/contexts/AuthContext'
 import TelegramAccountManager from '@/components/TelegramAccountManager'
 import TelegramCampaignController from '@/components/TelegramCampaignController'
 import TelegramQuickSend from '@/components/TelegramQuickSend'
+import TelegramScrapeInvite from '@/components/TelegramScrapeInvite'
 import LiveLogs, { type LogEntry } from '@/components/LiveLogs'
 
 const MAX_LOGS = 500
@@ -244,7 +245,15 @@ export default function TelegramDashboard() {
           </div>
         </div>
 
-        {/* Module C — Quick Send */}
+        {/* Module C — Scrape & Invite */}
+        <div className="bg-zinc-900/50 border border-zinc-800 rounded-lg p-4 shrink-0">
+          <TelegramScrapeInvite
+            accounts={accounts}
+            selectedAccountId={selectedAccountId}
+          />
+        </div>
+
+        {/* Module D — Quick Send */}
         <div className="bg-zinc-900/50 border border-zinc-800 rounded-lg p-4 shrink-0">
           <TelegramQuickSend
             accounts={accounts}
@@ -253,7 +262,7 @@ export default function TelegramDashboard() {
           />
         </div>
 
-        {/* Module D — Live Logs (Telegram only) */}
+        {/* Module E — Live Logs (Telegram only) */}
         <div className="bg-zinc-900/50 border border-zinc-800 rounded-lg p-4 shrink-0">
           <LiveLogs entries={logs} onClear={() => setLogs([])} selectedPhone={selectedAccountId} />
         </div>
