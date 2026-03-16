@@ -360,11 +360,28 @@ export class TelegramSession extends EventEmitter {
       // Already a participant — not an error
       if (err.errorMessage === 'USER_ALREADY_PARTICIPANT' || err.errorMessage === 'INVITE_REQUEST_SENT') {
         this.log(`Уже в группе: ${link}`)
-      } else if (err.errorMessage?.startsWith('FLOOD_WAIT')) {
-        const seconds = parseInt(err.errorMessage.split('_').pop()) || err.seconds || 60
+      } else if (err.errorMessage?.startsWith('FLOOD_WAIT') || err.errorMessage === 'FLOOD' || err.seconds) {
+        const seconds = err.seconds || parseInt(err.errorMessage?.split('_').pop()) || 120
         this.log(`FloodWait ${seconds}с при вступлении в ${link}`, 'warn')
-        await new Promise(r => setTimeout(r, seconds * 1000))
-        return this.joinGroup(link) // retry once
+        if (seconds > 600) {
+          // If flood wait is > 10 min, throw with special message so orchestrator can handle
+          throw new Error(`FLOOD_LONG_${seconds}`)
+        }
+        await new Promise(r => setTimeout(r, (seconds + 5) * 1000))
+        // Retry after waiting
+        try {
+          if (inviteMatch) {
+            result = await this.client.invoke(new Api.messages.ImportChatInvite({ hash: inviteMatch[1] }))
+          } else if (usernameMatch) {
+            result = await this.client.invoke(new Api.channels.JoinChannel({ channel: usernameMatch[1] }))
+          }
+        } catch (retryErr) {
+          if (retryErr.errorMessage === 'USER_ALREADY_PARTICIPANT') {
+            this.log(`Уже в группе после retry: ${link}`)
+          } else {
+            throw retryErr
+          }
+        }
       } else {
         throw err
       }

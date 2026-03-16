@@ -1347,17 +1347,24 @@ export class Orchestrator {
       try {
         await this.scrapeGroup(group.id, accountId)
       } catch (err) {
-        // Continue to next group on error
-        this.log(session.phone, `Пропуск ${group.link}: ${err.message}`, 'warn', 'telegram')
+        const msg = err.message || ''
+        // If long flood wait, pause and continue later
+        if (msg.startsWith('FLOOD_LONG_')) {
+          const waitSec = parseInt(msg.split('_').pop()) || 300
+          this.log(session.phone, `FloodWait ${waitSec}с — длинная пауза перед продолжением...`, 'warn', 'telegram')
+          await new Promise(r => setTimeout(r, Math.min(waitSec, 600) * 1000))
+        } else {
+          this.log(session.phone, `Пропуск ${group.link}: ${msg}`, 'warn', 'telegram')
+        }
       }
 
       completed++
       this._scrapeJob.progress = completed
       this.broadcast({ type: 'tg_scrape_progress', status: 'running', progress: completed, total: toScrape.length })
 
-      // Delay between groups (30-60s)
+      // Delay between groups (60-120s to avoid FLOOD)
       if (completed < toScrape.length && this._scrapeJob?.status === 'running') {
-        const delay = 30000 + Math.random() * 30000
+        const delay = 60000 + Math.random() * 60000
         this.log(session.phone, `Пауза ${Math.round(delay / 1000)}с перед следующей группой...`, 'info', 'telegram')
         await new Promise(r => setTimeout(r, delay))
       }
