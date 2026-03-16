@@ -7,6 +7,7 @@ const STATUS_BORDER: Record<string, string> = {
   disconnected:    'border-zinc-700',
   awaiting_code:   'border-yellow-600/40',
   awaiting_password: 'border-yellow-600/40',
+  qr_pending:      'border-purple-600/40',
   error:           'border-red-500/40',
 }
 
@@ -15,6 +16,7 @@ const STATUS_BG: Record<string, string> = {
   disconnected:    'bg-zinc-900',
   awaiting_code:   'bg-yellow-950/15',
   awaiting_password: 'bg-yellow-950/15',
+  qr_pending:      'bg-purple-950/15',
   error:           'bg-red-950/20',
 }
 
@@ -23,6 +25,7 @@ const STATUS_DOT: Record<string, string> = {
   disconnected:    'bg-zinc-600',
   awaiting_code:   'bg-yellow-400 animate-pulse',
   awaiting_password: 'bg-yellow-400 animate-pulse',
+  qr_pending:      'bg-purple-400 animate-pulse',
   error:           'bg-red-500 animate-pulse',
 }
 
@@ -31,6 +34,7 @@ const STATUS_LABELS: Record<string, string> = {
   disconnected:    'Отключён',
   awaiting_code:   'Ожидает код',
   awaiting_password: 'Ожидает пароль',
+  qr_pending:      'Сканируй QR',
   error:           'Ошибка',
 }
 
@@ -39,6 +43,7 @@ const STATUS_LABEL_COLOR: Record<string, string> = {
   disconnected:    'text-zinc-500',
   awaiting_code:   'text-yellow-400',
   awaiting_password: 'text-yellow-400',
+  qr_pending:      'text-purple-400',
   error:           'text-red-400',
 }
 
@@ -71,9 +76,10 @@ export default function TelegramAccountManager({ accounts, campaigns, onRefresh,
   const [deleteConfirm, setDeleteConfirm]   = useState<string | null>(null)
   const [actionLoading, setActionLoading]   = useState<string | null>(null)
 
-  // Per-account input states for code & password
+  // Per-account input states for code & password & QR
   const [codeInputs, setCodeInputs]         = useState<Record<string, string>>({})
   const [passwordInputs, setPasswordInputs] = useState<Record<string, string>>({})
+  const [qrImages, setQrImages]             = useState<Record<string, string>>({})
 
   async function addAccount() {
     if (!phone.trim()) return
@@ -126,6 +132,21 @@ export default function TelegramAccountManager({ accounts, campaigns, onRefresh,
       onRefresh()
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : 'Ошибка подтверждения пароля')
+    } finally {
+      setActionLoading(null)
+    }
+  }
+
+  async function qrLogin(id: string) {
+    setActionLoading(id); setError(null)
+    try {
+      const result = await api.telegram.accounts.qrLogin(id)
+      if (result.qr_data_url) {
+        setQrImages(prev => ({ ...prev, [id]: result.qr_data_url! }))
+      }
+      onRefresh()
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : 'Ошибка QR-входа')
     } finally {
       setActionLoading(null)
     }
@@ -310,27 +331,49 @@ export default function TelegramAccountManager({ accounts, campaigns, onRefresh,
 
                 {/* Status-specific actions */}
                 {a.status === 'disconnected' && (
-                  <button
-                    onClick={(e) => { e.stopPropagation(); requestCode(a.id) }}
-                    disabled={isLoading}
-                    className="text-yellow-400 text-[10px] border border-yellow-700/50 bg-yellow-950/30 rounded px-3 py-1
-                               hover:bg-yellow-900/40 transition-colors cursor-pointer disabled:opacity-50
-                               disabled:cursor-not-allowed font-bold"
-                  >
-                    {isLoading ? '...' : '📱 Запросить код'}
-                  </button>
+                  <>
+                    <button
+                      onClick={(e) => { e.stopPropagation(); qrLogin(a.id) }}
+                      disabled={isLoading}
+                      className="text-purple-400 text-[10px] border border-purple-700/50 bg-purple-950/30 rounded px-3 py-1
+                                 hover:bg-purple-900/40 transition-colors cursor-pointer disabled:opacity-50
+                                 disabled:cursor-not-allowed font-bold"
+                    >
+                      {isLoading ? '...' : '📷 QR вход'}
+                    </button>
+                    <button
+                      onClick={(e) => { e.stopPropagation(); requestCode(a.id) }}
+                      disabled={isLoading}
+                      className="text-yellow-400 text-[10px] border border-yellow-700/50 bg-yellow-950/30 rounded px-3 py-1
+                                 hover:bg-yellow-900/40 transition-colors cursor-pointer disabled:opacity-50
+                                 disabled:cursor-not-allowed font-bold"
+                    >
+                      {isLoading ? '...' : '📱 Код'}
+                    </button>
+                  </>
                 )}
 
                 {a.status === 'error' && (
-                  <button
-                    onClick={(e) => { e.stopPropagation(); requestCode(a.id) }}
-                    disabled={isLoading}
-                    className="text-yellow-400 text-[10px] border border-yellow-700/50 bg-yellow-950/30 rounded px-3 py-1
-                               hover:bg-yellow-900/40 transition-colors cursor-pointer disabled:opacity-50
-                               disabled:cursor-not-allowed font-bold"
-                  >
-                    {isLoading ? '...' : '↻ Переподключить'}
-                  </button>
+                  <>
+                    <button
+                      onClick={(e) => { e.stopPropagation(); qrLogin(a.id) }}
+                      disabled={isLoading}
+                      className="text-purple-400 text-[10px] border border-purple-700/50 bg-purple-950/30 rounded px-3 py-1
+                                 hover:bg-purple-900/40 transition-colors cursor-pointer disabled:opacity-50
+                                 disabled:cursor-not-allowed font-bold"
+                    >
+                      {isLoading ? '...' : '📷 QR вход'}
+                    </button>
+                    <button
+                      onClick={(e) => { e.stopPropagation(); requestCode(a.id) }}
+                      disabled={isLoading}
+                      className="text-yellow-400 text-[10px] border border-yellow-700/50 bg-yellow-950/30 rounded px-3 py-1
+                                 hover:bg-yellow-900/40 transition-colors cursor-pointer disabled:opacity-50
+                                 disabled:cursor-not-allowed font-bold"
+                    >
+                      {isLoading ? '...' : '↻ Код'}
+                    </button>
+                  </>
                 )}
 
                 {a.status === 'active' && (
@@ -351,6 +394,27 @@ export default function TelegramAccountManager({ accounts, campaigns, onRefresh,
                   </>
                 )}
               </div>
+
+              {/* QR code display — when qr_pending */}
+              {(a.status === 'qr_pending' || qrImages[a.id]) && (
+                <div className="flex flex-col items-center gap-2 mt-3 pl-7" onClick={e => e.stopPropagation()}>
+                  {qrImages[a.id] && (
+                    <>
+                      <img
+                        src={qrImages[a.id]}
+                        alt="QR Code"
+                        className="w-48 h-48 rounded-lg border border-purple-600/40 bg-zinc-950 p-2"
+                      />
+                      <span className="text-purple-400 text-[10px] font-bold animate-pulse">
+                        Отсканируй QR в Telegram → Настройки → Устройства
+                      </span>
+                    </>
+                  )}
+                  {a.status === 'qr_pending' && !qrImages[a.id] && (
+                    <span className="text-purple-400 text-xs animate-pulse">Генерация QR...</span>
+                  )}
+                </div>
+              )}
 
               {/* Code input — when awaiting_code */}
               {a.status === 'awaiting_code' && (

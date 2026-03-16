@@ -1121,6 +1121,15 @@ export class Orchestrator {
   }
 
   /**
+   * QR code login for a Telegram account.
+   */
+  async requestTelegramQrLogin(accountId) {
+    const session = this.telegramAccounts.get(accountId)
+    if (!session) throw new Error('Аккаунт не найден')
+    return session.requestQrLogin()
+  }
+
+  /**
    * Verify the code received on the phone.
    */
   async verifyTelegramCode(accountId, code) {

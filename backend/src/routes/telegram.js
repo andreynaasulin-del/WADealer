@@ -36,6 +36,12 @@ export default async function telegramRoutes(fastify) {
     return reply.send(result)
   })
 
+  // ── POST /api/telegram/accounts/:id/qr-login — generate QR code for login
+  fastify.post('/api/telegram/accounts/:id/qr-login', async (req, reply) => {
+    const result = await orchestrator.requestTelegramQrLogin(req.params.id)
+    return reply.send(result)
+  })
+
   // ── POST /api/telegram/accounts/:id/verify-code — submit the code ──────
   fastify.post('/api/telegram/accounts/:id/verify-code', {
     schema: {

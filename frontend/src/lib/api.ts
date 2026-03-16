@@ -174,6 +174,8 @@ export const api = {
         req<TelegramAccount>('/telegram/accounts', { method: 'POST', body: JSON.stringify({ phone }) }),
       requestCode: (id: string) =>
         req<{ status: string }>(`/telegram/accounts/${id}/request-code`, { method: 'POST', body: '{}' }),
+      qrLogin: (id: string) =>
+        req<{ status: string; qr_data_url?: string }>(`/telegram/accounts/${id}/qr-login`, { method: 'POST', body: '{}' }),
       verifyCode: (id: string, code: string) =>
         req<{ status: string; username?: string; firstName?: string }>(`/telegram/accounts/${id}/verify-code`, {
           method: 'POST', body: JSON.stringify({ code }),
