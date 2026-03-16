@@ -117,8 +117,25 @@ export class TelegramSession extends EventEmitter {
     const session = new StringSession(this.sessionString)
     this.client = new TelegramClient(session, getApiId(), getApiHash(), {
       connectionRetries: 5,
+      retryDelay: 2000,
     })
-    await this.client.connect()
+    try {
+      await this.client.connect()
+    } catch (err) {
+      if (err.message?.includes('AUTH_KEY_DUPLICATED')) {
+        this.log('AUTH_KEY_DUPLICATED — повторная попытка через 5с...', 'warn')
+        await new Promise(r => setTimeout(r, 5000))
+        // Recreate client and retry
+        this.client = new TelegramClient(
+          new StringSession(this.sessionString),
+          getApiId(), getApiHash(),
+          { connectionRetries: 5, retryDelay: 2000 }
+        )
+        await this.client.connect()
+      } else {
+        throw err
+      }
+    }
 
     // If we have a saved session, try to restore auth
     if (this.sessionString) {

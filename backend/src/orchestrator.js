@@ -1200,9 +1200,13 @@ export class Orchestrator {
 
         // Auto-reconnect accounts that were active and have session string
         if (a.status === 'active' && a.session_string) {
-          session.connect().catch(err => {
-            this.log(a.phone, `Ошибка автоподключения: ${err.message}`, 'error', 'telegram')
-          })
+          // Stagger reconnects with a delay to avoid AUTH_KEY_DUPLICATED
+          const delay = autoStarted * 3000 + 2000
+          setTimeout(() => {
+            session.connect().catch(err => {
+              this.log(a.phone, `Ошибка автоподключения: ${err.message}`, 'error', 'telegram')
+            })
+          }, delay)
           autoStarted++
         }
       }
