@@ -640,26 +640,32 @@ export class TelegramSession extends EventEmitter {
   async inviteToChannel(channel, user) {
     if (this.status !== 'active' || !this.client) throw new Error('Аккаунт не активен')
 
-    // Resolve user — use username if available (access_hash is session-specific)
-    let inputUser
+    // Resolve user entity — use username if available (access_hash is session-specific)
+    let resolvedEntity
     try {
       if (user.username) {
-        const entity = await this.client.getEntity(user.username)
-        inputUser = new Api.InputPeerUser({ userId: entity.id, accessHash: entity.accessHash })
+        resolvedEntity = await this.client.getEntity(user.username)
       } else {
-        inputUser = new Api.InputPeerUser({
-          userId: user.userId,
-          accessHash: BigInt(user.accessHash || '0'),
-        })
+        resolvedEntity = await this.client.getEntity(
+          new Api.PeerUser({ userId: user.userId })
+        )
       }
     } catch (err) {
-      return { success: false, error: 'CANNOT_RESOLVE_USER' }
+      // Last resort: try with raw InputUser
+      try {
+        resolvedEntity = new Api.InputUser({
+          userId: BigInt(user.userId),
+          accessHash: BigInt(user.accessHash || '0'),
+        })
+      } catch (_) {
+        return { success: false, error: 'CANNOT_RESOLVE_USER' }
+      }
     }
 
     try {
       // Add as contact first
       await this.client.invoke(new Api.contacts.AddContact({
-        id: inputUser,
+        id: resolvedEntity,
         firstName: user.firstName || '',
         lastName: '',
         phone: '',
@@ -671,7 +677,7 @@ export class TelegramSession extends EventEmitter {
       const channelEntity = await this.client.getEntity(channel)
       const result = await this.client.invoke(new Api.channels.InviteToChannel({
         channel: channelEntity,
-        users: [inputUser],
+        users: [resolvedEntity],
       }))
 
       // Check missingInvitees
