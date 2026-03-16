@@ -566,23 +566,14 @@ export class TelegramSession extends EventEmitter {
       }))
 
       // Log raw result type for debugging
-      this.log(`InviteToChannel result: ${result?.className} updates=${result?.updates?.length ?? 'n/a'} missing=${JSON.stringify(result?.missingInvitees ?? [])}`, 'debug')
+      const updatesArr = Array.isArray(result?.updates) ? result.updates : []
+      const missingArr = Array.isArray(result?.missingInvitees) ? result.missingInvitees : []
+      this.log(`InviteToChannel result: ${result?.className} updates=${updatesArr.length} missing=${missingArr.length}`, 'debug')
 
       // Check missingInvitees — Telegram returns this when user couldn't be added
-      const missing = result?.missingInvitees || []
-      if (missing.length > 0) {
-        const reason = missing[0]?.className || 'MISSING_INVITEE'
+      if (missingArr.length > 0) {
+        const reason = missingArr[0]?.className || 'MISSING_INVITEE'
         return { success: false, error: reason }
-      }
-
-      // If updates array is empty, nobody was actually added
-      const updates = result?.updates || []
-      const wasAdded = updates.some(u =>
-        u?.className === 'UpdateChannel' || u?.className === 'UpdateChatParticipantAdd'
-        || u?.className === 'UpdateChannelParticipant'
-      )
-      if (!wasAdded && updates.length === 0) {
-        return { success: false, error: 'NO_UPDATES_RETURNED' }
       }
 
       return { success: true }
