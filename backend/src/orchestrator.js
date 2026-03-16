@@ -1425,9 +1425,12 @@ export class Orchestrator {
         this.log(session.phone, `Приглашён ${member.username || member.user_id} [${invited}/${dailyLimit}]`, 'info', 'telegram')
       } else {
         const isPrivacy = result.error === 'USER_PRIVACY_RESTRICTED' || result.error === 'USER_NOT_MUTUAL_CONTACT'
+          || result.error === 'USER_CHANNELS_TOO_MUCH' || result.error === 'USER_KICKED'
+        this.log(session.phone, `Ошибка инвайта ${member.username || member.user_id}: ${result.error}`, isPrivacy ? 'warn' : 'error', 'telegram')
         await db.dbUpdateMemberInviteStatus(member.id, isPrivacy ? 'skipped' : 'failed', result.error)
         if (isPrivacy) {
           skipped++
+          consecutiveErrors = 0 // privacy errors are expected, don't count
         } else {
           failed++
           consecutiveErrors++
