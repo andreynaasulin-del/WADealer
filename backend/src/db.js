@@ -1037,6 +1037,7 @@ export async function dbUpsertScrapedMembers(groupId, members) {
     access_hash: m.accessHash ? String(m.accessHash) : null,
     source_group_id: groupId,
     is_bot: m.isBot || false,
+    gender: m.gender || 'unknown',
   }))
   // Batch upsert in chunks of 500
   let inserted = 0

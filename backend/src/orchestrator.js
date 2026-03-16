@@ -1303,11 +1303,11 @@ export class Orchestrator {
       this.log(session.phone, `Вступил в ${info.title} (${info.participantsCount} участников)`, 'info', 'telegram')
       this.broadcast({ type: 'tg_scrape_progress', groupId, status: 'scraping', title: info.title, memberCount: info.participantsCount })
 
-      // Scrape members
+      // Scrape members (auto-filters: skips bots + females, keeps males + unknown)
       const entity = group.username || info.id
       let totalScraped = 0
-      const count = await session.scrapeMembers(entity, async (batch) => {
-        const inserted = await db.dbUpsertScrapedMembers(groupId, batch)
+      const result = await session.scrapeMembers(entity, async (batch) => {
+        await db.dbUpsertScrapedMembers(groupId, batch)
         totalScraped += batch.length
         this.broadcast({ type: 'tg_scrape_progress', groupId, status: 'scraping', scraped: totalScraped })
       })
@@ -1315,10 +1315,10 @@ export class Orchestrator {
       await db.dbUpdateSourceGroup(groupId, {
         status: 'scraped',
         scraped_at: new Date().toISOString(),
-        member_count: count || totalScraped,
+        member_count: result.total || totalScraped,
       })
-      this.log(session.phone, `Спарсено ${totalScraped} из ${group.title || group.link}`, 'info', 'telegram')
-      this.broadcast({ type: 'tg_scrape_progress', groupId, status: 'scraped', scraped: totalScraped })
+      this.log(session.phone, `Спарсено ${totalScraped} муж. из ${group.title || group.link} (пропущено ${result.skippedFemale} жен., ${result.skippedBot} ботов)`, 'info', 'telegram')
+      this.broadcast({ type: 'tg_scrape_progress', groupId, status: 'scraped', scraped: totalScraped, skippedFemale: result.skippedFemale, skippedBot: result.skippedBot })
       return totalScraped
     } catch (err) {
       const msg = err.errorMessage || err.message || 'Scrape error'

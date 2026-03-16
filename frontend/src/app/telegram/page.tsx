@@ -221,50 +221,52 @@ export default function TelegramDashboard() {
       </div>
 
       {/* Content */}
-      <main className="flex-1 flex flex-col gap-3 p-3 overflow-hidden max-w-screen-2xl mx-auto w-full">
-        {/* Main grid — side by side at md (768px+) */}
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-3 flex-1 min-h-0">
-          {/* Module A — Accounts */}
-          <div className="bg-zinc-900/50 border border-zinc-800 rounded-lg p-4 overflow-y-auto">
-            <TelegramAccountManager
+      <main className="flex-1 overflow-y-auto p-3">
+        <div className="flex flex-col gap-3 max-w-screen-2xl mx-auto w-full">
+          {/* Main grid — side by side at md (768px+) */}
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            {/* Module A — Accounts */}
+            <div className="bg-zinc-900/50 border border-zinc-800 rounded-lg p-4">
+              <TelegramAccountManager
+                accounts={accounts}
+                campaigns={campaigns}
+                onRefresh={loadAccounts}
+                selectedAccountId={selectedAccountId}
+                onSelect={setSelectedAccountId}
+              />
+            </div>
+
+            {/* Module B — Campaigns */}
+            <div className="bg-zinc-900/50 border border-zinc-800 rounded-lg p-4">
+              <TelegramCampaignController
+                accounts={accounts}
+                selectedAccountId={selectedAccountId}
+                onStatsRefresh={() => { loadStats(); loadCampaigns() }}
+              />
+            </div>
+          </div>
+
+          {/* Module C — Scrape & Invite */}
+          <div className="bg-zinc-900/50 border border-zinc-800 rounded-lg p-4">
+            <TelegramScrapeInvite
               accounts={accounts}
-              campaigns={campaigns}
-              onRefresh={loadAccounts}
               selectedAccountId={selectedAccountId}
-              onSelect={setSelectedAccountId}
             />
           </div>
 
-          {/* Module B — Campaigns */}
-          <div className="bg-zinc-900/50 border border-zinc-800 rounded-lg p-4 overflow-y-auto">
-            <TelegramCampaignController
+          {/* Module D — Quick Send */}
+          <div className="bg-zinc-900/50 border border-zinc-800 rounded-lg p-4">
+            <TelegramQuickSend
               accounts={accounts}
               selectedAccountId={selectedAccountId}
               onStatsRefresh={() => { loadStats(); loadCampaigns() }}
             />
           </div>
-        </div>
 
-        {/* Module C — Scrape & Invite */}
-        <div className="bg-zinc-900/50 border border-zinc-800 rounded-lg p-4 shrink-0">
-          <TelegramScrapeInvite
-            accounts={accounts}
-            selectedAccountId={selectedAccountId}
-          />
-        </div>
-
-        {/* Module D — Quick Send */}
-        <div className="bg-zinc-900/50 border border-zinc-800 rounded-lg p-4 shrink-0">
-          <TelegramQuickSend
-            accounts={accounts}
-            selectedAccountId={selectedAccountId}
-            onStatsRefresh={() => { loadStats(); loadCampaigns() }}
-          />
-        </div>
-
-        {/* Module E — Live Logs (Telegram only) */}
-        <div className="bg-zinc-900/50 border border-zinc-800 rounded-lg p-4 shrink-0">
-          <LiveLogs entries={logs} onClear={() => setLogs([])} selectedPhone={selectedAccountId} />
+          {/* Module E — Live Logs (Telegram only) */}
+          <div className="bg-zinc-900/50 border border-zinc-800 rounded-lg p-4">
+            <LiveLogs entries={logs} onClear={() => setLogs([])} selectedPhone={selectedAccountId} />
+          </div>
         </div>
       </main>
     </div>

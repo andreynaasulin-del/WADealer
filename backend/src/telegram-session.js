@@ -6,6 +6,80 @@ import { EventEmitter } from 'events'
 const apiId = parseInt(process.env.TG_API_ID || '0')
 const apiHash = process.env.TG_API_HASH || ''
 
+// ─── Gender detection by first name ─────────────────────────────────────────
+// Hebrew/Russian/English female name patterns — used to EXCLUDE women
+const FEMALE_NAMES = new Set([
+  // Hebrew female
+  'noa','noy','maya','shira','yael','tamar','michal','dana','mor','chen','talia','lee','tal','rotem','sapir',
+  'keren','liat','shani','hila','gal','roni','hadas','inbar','efrat','meital','orly','orna','revital','galit',
+  'sigal','osnat','orit','anat','ilanit','limor','nurit','ruth','miriam','sara','sarah','avital','liora',
+  'ayelet','neta','adi','maayan','naama','lihi','amit','eden','agam','hadar','alma','daniela','yonat',
+  'reut','sivan','einav','lilac','lior','shirel','nofar','tehila','hodaya','bat','shaked','coral',
+  'noga','ori','hagar','yasmin','karen','stav','tali','lia','lian','ella','emma','mia','lily','anna',
+  'rona','dikla','shirly','aya','nirit','shlomit','malka','rachel','leah','rivka',
+  // Russian female
+  'anna','maria','elena','olga','natasha','natalia','ekaterina','irina','tatiana','svetlana','marina',
+  'julia','yulia','oksana','vera','galina','lyudmila','valentina','tamara','larisa','nina','alla',
+  'daria','kristina','polina','anastasia','alexandra','victoria','alina','diana','sofia','karina',
+  'yana','lena','masha','dasha','sasha','katya','nastya','sveta','tanya','liza','ira','nadya',
+  'zhenya','valeria','veronika','eva','milana','arina','alisa','mila','zlata',
+  // English/common female
+  'jessica','jennifer','ashley','amanda','stephanie','nicole','melissa','michelle','elizabeth','samantha',
+  'sarah','emily','rebecca','lisa','laura','heather','angela','amber','rachel','christina','lauren','brittany',
+  'kate','mary','patricia','linda','barbara','margaret','susan','dorothy','karen','nancy','betty','helen',
+  'donna','carol','ruth','sharon','cynthia','kathleen','amy','deborah','shirley','brenda',
+  // Arabic female
+  'fatima','aisha','layla','noor','hana','reem','dina','lina','rana','amira','yasmine','salma','mariam',
+])
+
+const MALE_NAMES = new Set([
+  // Hebrew male
+  'david','moshe','yosef','avraham','yaakov','yitzhak','daniel','michael','avi','amit','amir','idan',
+  'eyal','oren','ran','tal','rotem','gal','lior','chen','guy','noam','omer','itai','yonatan','elad',
+  'oded','shachar','roi','matan','asaf','barak','gilad','nadav','eran','nir','shai','alon','yaron',
+  'ronen','arie','ori','dor','tomer','ben','yossi','rami','haim','shimon','shlomo','ehud',
+  'gadi','boaz','amnon','kobi','erez','meir','ariel','uri','tzvi','doron','yehuda','baruch',
+  'avi','dima','benny','ilan','ofir','eliran','moti','zvika',
+  // Russian male
+  'alexander','alexei','andrei','anton','artem','boris','denis','dmitri','dmitry','evgeni','evgeny',
+  'igor','ilya','ivan','kirill','konstantin','leonid','maxim','mikhail','nikita','nikolai',
+  'oleg','pavel','roman','ruslan','sergei','sergey','stanislav','vadim','valery','vasily',
+  'victor','viktor','vitaly','vladimir','vlad','yuri','yury','grigory','arkady','timur',
+  'kolya','petya','sasha','dima','vanya','misha','pasha','zhenya','kostya','slava','tolya',
+  // English/common male
+  'james','john','robert','michael','william','david','richard','joseph','thomas','charles','daniel',
+  'matthew','anthony','mark','donald','steven','paul','andrew','joshua','kenneth','kevin','brian',
+  'george','timothy','ronald','edward','jason','jeffrey','ryan','jacob','gary','nicholas','eric',
+  'stephen','jonathan','larry','justin','scott','brandon','benjamin','samuel','raymond','gregory',
+  'frank','alexander','patrick','jack','dennis','jerry','tyler','aaron','jose','adam','nathan',
+  // Arabic male
+  'ahmed','mohammed','ali','omar','hassan','hussein','khalid','samir','fadi','rami','nabil','tariq',
+  'karim','walid','ayman','bilal','youssef','ibrahim','mustafa','jamal',
+])
+
+/**
+ * Guess gender from first name.
+ * Returns 'male', 'female', or 'unknown'.
+ */
+function guessGender(firstName) {
+  if (!firstName) return 'unknown'
+  const name = firstName.toLowerCase().trim().replace(/[^a-z\u0400-\u04ff\u0590-\u05ff]/g, '')
+  if (!name) return 'unknown'
+
+  // Direct set lookup
+  if (FEMALE_NAMES.has(name)) return 'female'
+  if (MALE_NAMES.has(name)) return 'male'
+
+  // Hebrew unicode name heuristics
+  // Names ending with common Hebrew female suffixes
+  if (/[aeiou]$/.test(name) && name.length > 2) {
+    // Common female endings in transliterated Hebrew: -a, -i, -it, -li, -ela
+    if (name.endsWith('it') || name.endsWith('ela') || name.endsWith('lia')) return 'female'
+  }
+
+  return 'unknown'
+}
+
 /**
  * TelegramSession — manages a single Telegram USER ACCOUNT via MTProto (GramJS).
  * Analogous to Session (WhatsApp/Baileys) but for Telegram user login.
@@ -312,19 +386,35 @@ export class TelegramSession extends EventEmitter {
 
   /**
    * Scrape members from a group/channel.
+   * Filters: skips bots and females (only keeps males + unknown gender).
    * @param {string|number} entity — group username or ID
    * @param {function} onBatch — callback(members[]) called for each batch of ~200
-   * @returns {number} total scraped
+   * @returns {{ total: number, skippedFemale: number, skippedBot: number }}
    */
   async scrapeMembers(entity, onBatch) {
     if (this.status !== 'active' || !this.client) throw new Error('Аккаунт не активен')
 
     let total = 0
+    let skippedFemale = 0
+    let skippedBot = 0
     let batch = []
     const BATCH_SIZE = 200
 
     try {
       for await (const participant of this.client.iterParticipants(entity, { limit: BATCH_SIZE })) {
+        // Skip bots
+        if (participant.bot) {
+          skippedBot++
+          continue
+        }
+
+        // Gender filter — skip females
+        const gender = guessGender(participant.firstName)
+        if (gender === 'female') {
+          skippedFemale++
+          continue
+        }
+
         batch.push({
           userId: typeof participant.id === 'bigint' ? Number(participant.id) : participant.id,
           accessHash: participant.accessHash ? String(participant.accessHash) : null,
@@ -332,7 +422,8 @@ export class TelegramSession extends EventEmitter {
           firstName: participant.firstName || null,
           lastName: participant.lastName || null,
           phone: participant.phone || null,
-          isBot: participant.bot || false,
+          isBot: false,
+          gender, // 'male' or 'unknown'
         })
 
         if (batch.length >= BATCH_SIZE) {
@@ -352,13 +443,11 @@ export class TelegramSession extends EventEmitter {
         const seconds = parseInt(err.errorMessage.split('_').pop()) || err.seconds || 60
         this.log(`FloodWait ${seconds}с при скрейпе — ждём...`, 'warn')
         await new Promise(r => setTimeout(r, seconds * 1000))
-        // Flush what we have so far
         if (batch.length > 0) {
           await onBatch(batch)
           total += batch.length
         }
       } else {
-        // Flush and re-throw
         if (batch.length > 0) {
           await onBatch(batch)
           total += batch.length
@@ -367,7 +456,8 @@ export class TelegramSession extends EventEmitter {
       }
     }
 
-    return total
+    this.log(`Скрейп завершён: ${total} мужчин, пропущено ${skippedFemale} женщин, ${skippedBot} ботов`)
+    return { total, skippedFemale, skippedBot }
   }
 
   /**
