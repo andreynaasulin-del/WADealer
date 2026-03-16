@@ -3,8 +3,9 @@ import { StringSession } from 'telegram/sessions/index.js'
 import { computeCheck } from 'telegram/Password.js'
 import { EventEmitter } from 'events'
 
-const apiId = parseInt(process.env.TG_API_ID || '0')
-const apiHash = process.env.TG_API_HASH || ''
+// Lazy-read env vars (ESM hoists imports before dotenv/config runs)
+function getApiId() { return parseInt(process.env.TG_API_ID || '0') }
+function getApiHash() { return process.env.TG_API_HASH || '' }
 
 // ─── Gender detection by first name ─────────────────────────────────────────
 // Hebrew/Russian/English female name patterns — used to EXCLUDE women
@@ -114,7 +115,7 @@ export class TelegramSession extends EventEmitter {
    */
   async connect() {
     const session = new StringSession(this.sessionString)
-    this.client = new TelegramClient(session, apiId, apiHash, {
+    this.client = new TelegramClient(session, getApiId(), getApiHash(), {
       connectionRetries: 5,
     })
     await this.client.connect()
@@ -169,7 +170,7 @@ export class TelegramSession extends EventEmitter {
 
     try {
       const result = await this.client.sendCode(
-        { apiId, apiHash },
+        { apiId: getApiId(), apiHash: getApiHash() },
         this.phone
       )
       this.phoneCodeHash = result.phoneCodeHash
