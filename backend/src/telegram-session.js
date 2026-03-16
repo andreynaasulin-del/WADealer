@@ -565,15 +565,24 @@ export class TelegramSession extends EventEmitter {
         users: [inputUser],
       }))
 
-      // Log raw result type for debugging
+      // Deep debug: log full result structure
       const updatesArr = Array.isArray(result?.updates) ? result.updates : []
       const missingArr = Array.isArray(result?.missingInvitees) ? result.missingInvitees : []
-      this.log(`InviteToChannel result: ${result?.className} updates=${updatesArr.length} missing=${missingArr.length}`, 'debug')
+      const updateTypes = updatesArr.map(u => u?.className).join(',')
+      this.log(`INVITE_RESULT class=${result?.className} updates=[${updateTypes}] missing=${missingArr.length} keys=${Object.keys(result||{}).join(',')}`, 'warn')
 
-      // Check missingInvitees — Telegram returns this when user couldn't be added
+      // Check missingInvitees
       if (missingArr.length > 0) {
-        const reason = missingArr[0]?.className || 'MISSING_INVITEE'
-        return { success: false, error: reason }
+        return { success: false, error: 'MISSING_INVITEE' }
+      }
+
+      // Confirm user was actually added by checking for UpdateChannelParticipant
+      const wasActuallyAdded = updatesArr.some(u =>
+        u?.className === 'UpdateChannelParticipant' || u?.className === 'UpdateChatParticipantAdd'
+      )
+      if (updatesArr.length > 0 && !wasActuallyAdded) {
+        this.log(`INVITE_NOT_ADDED: updates present but no participant update. Types: ${updateTypes}`, 'warn')
+        return { success: false, error: 'NOT_ADDED_SILENTLY' }
       }
 
       return { success: true }
