@@ -336,7 +336,7 @@ export interface TelegramAccount {
   username: string | null
   first_name: string | null
   last_name: string | null
-  status: 'disconnected' | 'awaiting_code' | 'awaiting_password' | 'active' | 'error'
+  status: 'disconnected' | 'awaiting_code' | 'awaiting_password' | 'qr_pending' | 'active' | 'error'
   error_msg: string | null
   connectedAt: string | null
   created_at: string
