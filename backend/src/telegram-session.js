@@ -188,9 +188,15 @@ export class TelegramSession extends EventEmitter {
    * Request a verification code to the phone number.
    */
   async requestCode() {
-    if (!this.client?.connected) {
-      await this.connect()
-    }
+    // Always use a fresh session for re-auth to avoid AUTH_KEY_DUPLICATED
+    try { if (this.client?.connected) await this.client.disconnect() } catch {}
+    this.sessionString = ''
+    this.client = new TelegramClient(
+      new StringSession(''),
+      getApiId(), getApiHash(),
+      { connectionRetries: 5, retryDelay: 2000 }
+    )
+    await this.client.connect()
 
     try {
       const result = await this.client.sendCode(
