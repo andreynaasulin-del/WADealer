@@ -1099,7 +1099,7 @@ export async function dbGetPendingScrapedMembers(limit = 50) {
     .select('*')
     .eq('invite_status', 'pending')
     .eq('is_bot', false)
-    .eq('gender', 'male')
+    .neq('gender', 'female')
     .order('created_at', { ascending: true })
     .limit(limit)
   if (error) throw error
