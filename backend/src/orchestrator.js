@@ -5,6 +5,7 @@ import { TelegramSession } from './telegram-session.js'
 import { MessageQueue } from './queue.js'
 import { classifyLead } from './ai-classifier.js'
 import { generateAutoReply, extractConversationData } from './ai-responder.js'
+import { encryptCompact, decryptCompact } from './crypto.js'
 import * as db from './db.js'
 
 /**
@@ -899,6 +900,9 @@ export class Orchestrator {
     this._watchdogTimer = setInterval(() => this._sessionWatchdog(), 2 * 60_000)
     // Первый запуск через 90 сек (дать время на стартовый connect)
     setTimeout(() => this._sessionWatchdog(), 90_000)
+
+    // ── HEARTBEAT: мониторинг всех аккаунтов в реальном времени ──
+    setTimeout(() => this.startHeartbeat(), 60_000)
   }
 
   /**
@@ -1418,6 +1422,8 @@ export class Orchestrator {
       const result = await session.inviteToChannel(targetChannel, {
         userId: member.user_id,
         accessHash: member.access_hash,
+        username: member.username,
+        firstName: member.first_name,
       })
 
       if (result.rateLimited) {
@@ -1487,6 +1493,356 @@ export class Orchestrator {
 
   getInviteStatus() {
     return this._inviteJob || { status: 'idle' }
+  }
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // Heartbeat System — monitors all accounts in real-time
+  // ══════════════════════════════════════════════════════════════════════════
+
+  /**
+   * Start heartbeat monitoring for all accounts.
+   * Runs every 30s, checks connectivity, auto-reconnects failed sessions.
+   */
+  startHeartbeat() {
+    if (this._heartbeatTimer) return
+    const HEARTBEAT_INTERVAL = 30_000 // 30 sec
+
+    this._heartbeatTimer = setInterval(() => this._runHeartbeat(), HEARTBEAT_INTERVAL)
+    this.log(null, 'Heartbeat мониторинг запущен (30с)', 'system')
+  }
+
+  stopHeartbeat() {
+    if (this._heartbeatTimer) {
+      clearInterval(this._heartbeatTimer)
+      this._heartbeatTimer = null
+    }
+  }
+
+  async _runHeartbeat() {
+    const statuses = []
+
+    // ── Telegram accounts heartbeat ──
+    for (const [id, session] of this.telegramAccounts) {
+      try {
+        if (session.status === 'active' && session.client?.connected) {
+          // Ping — try getMe as lightweight check
+          await session.client.getMe()
+          await db.dbUpdateTelegramAccountStatus(id, 'active')
+          try { await db.dbUpdateHeartbeat('tg_accounts', id) } catch (_) {}
+          statuses.push({ id, platform: 'telegram', status: 'alive' })
+        } else if (session.status === 'active' && !session.client?.connected) {
+          // Connection dropped — increment failure counter
+          let failures = 0
+          try { failures = await db.dbIncrementHeartbeatFailures('tg_accounts', id) } catch (_) {}
+          statuses.push({ id, platform: 'telegram', status: 'dead', failures })
+
+          // Auto-reconnect after 3 consecutive failures
+          if (failures >= 3 && session.sessionString) {
+            this.log(session.phone, `Heartbeat: ${failures} провалов — автопереподключение`, 'warn', 'telegram')
+            session.connect().catch(err => {
+              this.log(session.phone, `Heartbeat reconnect error: ${err.message}`, 'error', 'telegram')
+            })
+          }
+        }
+      } catch (err) {
+        try { await db.dbIncrementHeartbeatFailures('tg_accounts', id) } catch (_) {}
+        statuses.push({ id, platform: 'telegram', status: 'error', error: err.message })
+      }
+    }
+
+    // ── WhatsApp sessions heartbeat ──
+    for (const [phone, session] of this.sessions) {
+      try {
+        if (session.status === 'online' && session.sock) {
+          const ws = session.sock?.ws
+          if (ws && typeof ws.readyState === 'number' && ws.readyState === 1) {
+            try { await db.dbUpdateHeartbeat('wa_sessions', session.id) } catch (_) {}
+            statuses.push({ phone, platform: 'whatsapp', status: 'alive' })
+          } else {
+            let failures = 0
+            try { failures = await db.dbIncrementHeartbeatFailures('wa_sessions', session.id) } catch (_) {}
+            statuses.push({ phone, platform: 'whatsapp', status: 'dead', failures })
+          }
+        }
+      } catch (err) {
+        statuses.push({ phone, platform: 'whatsapp', status: 'error', error: err.message })
+      }
+    }
+
+    // Broadcast heartbeat status to frontend
+    this.broadcast({
+      type: 'heartbeat',
+      ts: new Date().toISOString(),
+      accounts: statuses,
+    })
+  }
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // Per-Account Settings Management
+  // ══════════════════════════════════════════════════════════════════════════
+
+  /**
+   * Get settings for a Telegram account.
+   */
+  async getTelegramAccountSettings(accountId) {
+    const session = this.telegramAccounts.get(accountId)
+    if (!session) throw new Error('Аккаунт не найден')
+
+    const accounts = await db.dbGetAllTelegramAccounts()
+    const account = accounts.find(a => a.id === accountId)
+    return account?.settings || this._defaultTgSettings()
+  }
+
+  /**
+   * Update settings for a Telegram account.
+   */
+  async updateTelegramAccountSettings(accountId, settings) {
+    const session = this.telegramAccounts.get(accountId)
+    if (!session) throw new Error('Аккаунт не найден')
+
+    // Merge with existing settings
+    const accounts = await db.dbGetAllTelegramAccounts()
+    const account = accounts.find(a => a.id === accountId)
+    const current = account?.settings || this._defaultTgSettings()
+    const merged = { ...current, ...settings }
+
+    // Validate and save
+    const { error } = await db.supabase
+      .from('tg_accounts')
+      .update({ settings: merged, updated_at: new Date().toISOString() })
+      .eq('id', accountId)
+
+    if (error) throw error
+
+    this.log(session.phone, `Настройки обновлены`, 'info', 'telegram')
+    this.broadcast({ type: 'tg_account_settings_update', accountId, settings: merged })
+
+    return merged
+  }
+
+  /**
+   * Update proxy for a Telegram account.
+   */
+  async updateTelegramAccountProxy(accountId, proxyString) {
+    const session = this.telegramAccounts.get(accountId)
+    if (!session) throw new Error('Аккаунт не найден')
+
+    const { error } = await db.supabase
+      .from('tg_accounts')
+      .update({ proxy_string: proxyString, updated_at: new Date().toISOString() })
+      .eq('id', accountId)
+
+    if (error) throw error
+
+    // Update in-memory session proxy
+    session.proxyString = proxyString
+    this.log(session.phone, `Прокси обновлён: ${proxyString ? proxyString.split(':')[0] : 'отключен'}`, 'info', 'telegram')
+
+    return { id: accountId, proxy_string: proxyString }
+  }
+
+  _defaultTgSettings() {
+    return {
+      inviting: { enabled: false, daily_limit: 40, delay_min: 30, delay_max: 90, channels: [] },
+      story_liking: { enabled: false, interval_min: 300, interval_max: 900, like_probability: 0.7 },
+      neuro_commenting: { enabled: false, ai_model: 'grok', comment_interval_min: 600, comment_interval_max: 1800, max_daily: 20 },
+      mass_dm: { enabled: false, daily_limit: 30, delay_min: 60, delay_max: 180, template: '' },
+    }
+  }
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // SaaS Dashboard Stats
+  // ══════════════════════════════════════════════════════════════════════════
+
+  async getDashboardStats() {
+    const [waStats, tgStats, scrapedStats] = await Promise.all([
+      db.dbGetStats(),
+      db.dbGetTelegramStats(),
+      db.dbGetScrapedMembersStats().catch(() => ({ pending: 0, invited: 0, failed: 0, skipped: 0, total: 0 })),
+    ])
+
+    // Activity log stats (today)
+    let activityToday = {}
+    try {
+      const { data } = await db.supabase.rpc('get_daily_stats')
+      activityToday = data || {}
+    } catch (_) {}
+
+    // Heartbeat status
+    const heartbeat = {
+      tg_alive: 0, tg_dead: 0,
+      wa_alive: 0, wa_dead: 0,
+    }
+    for (const [, session] of this.telegramAccounts) {
+      if (session.status === 'active' && session.client?.connected) heartbeat.tg_alive++
+      else if (session.status === 'active') heartbeat.tg_dead++
+    }
+    for (const [, session] of this.sessions) {
+      if (session.status === 'online') heartbeat.wa_alive++
+      else heartbeat.wa_dead++
+    }
+
+    // Queue status
+    const queues = {
+      wa: { status: this.waQueueStatus, size: this.waQueueSize },
+      tg: { status: this.telegramQueue.status, size: this.telegramQueue.size },
+    }
+
+    // Running campaigns
+    const waCampaigns = await db.dbGetAllCampaigns()
+    const tgCampaigns = await db.dbGetAllTelegramCampaigns()
+
+    return {
+      whatsapp: waStats,
+      telegram: tgStats,
+      scraped: scrapedStats,
+      heartbeat,
+      queues,
+      activity: activityToday,
+      campaigns: {
+        wa_running: waCampaigns.filter(c => c.status === 'running').length,
+        wa_total: waCampaigns.length,
+        tg_running: tgCampaigns.filter(c => c.status === 'running').length,
+        tg_total: tgCampaigns.length,
+      },
+      invite: this.getInviteStatus(),
+      scrape: this.getScrapeStatus(),
+    }
+  }
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // Session Encryption helpers
+  // ══════════════════════════════════════════════════════════════════════════
+
+  /**
+   * Encrypt a Telegram session string before storing in DB.
+   */
+  encryptSessionString(sessionString) {
+    if (!sessionString) return ''
+    return encryptCompact(sessionString)
+  }
+
+  /**
+   * Decrypt a Telegram session string from DB.
+   */
+  decryptSessionString(encryptedString) {
+    if (!encryptedString) return ''
+    return decryptCompact(encryptedString)
+  }
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // Multi-Account Invite with per-account settings
+  // ══════════════════════════════════════════════════════════════════════════
+
+  /**
+   * Start multi-account invite using per-account settings.
+   * Each account uses its own daily_limit and delay settings from settings.inviting
+   */
+  async startMultiAccountInvite(channels, dailyLimitPerAccount = 40, delayBetweenInvitesSec = 45) {
+    const activeAccounts = Array.from(this.telegramAccounts.values()).filter(a => a.status === 'active')
+    if (activeAccounts.length === 0) throw new Error('Нет активных TG аккаунтов')
+
+    // Get per-account settings
+    const allAccounts = await db.dbGetAllTelegramAccounts()
+    const accountConfigs = activeAccounts.map(session => {
+      const dbAccount = allAccounts.find(a => a.id === session.id)
+      const settings = dbAccount?.settings?.inviting || {}
+      return {
+        session,
+        dailyLimit: settings.daily_limit || dailyLimitPerAccount,
+        delayMin: settings.delay_min || delayBetweenInvitesSec,
+        delayMax: settings.delay_max || delayBetweenInvitesSec * 2,
+        channels: settings.channels?.length ? settings.channels : channels,
+      }
+    })
+
+    // Get pending members
+    const pendingMembers = await db.dbGetPendingScrapedMembers(500)
+    if (pendingMembers.length === 0) throw new Error('Нет pending участников для инвайта')
+
+    // Distribute channels round-robin across accounts
+    const totalChannels = channels.length || 1
+    this._multiInviteJob = { status: 'running', accounts: accountConfigs.length, invited: 0, failed: 0, skipped: 0 }
+    this.broadcast({ type: 'tg_multi_invite_start', accounts: accountConfigs.length, pending: pendingMembers.length })
+
+    let globalInvited = 0
+    let globalFailed = 0
+    let globalSkipped = 0
+
+    // Round-robin: each account takes turns inviting to its assigned channel
+    let memberIdx = 0
+    while (this._multiInviteJob?.status === 'running' && memberIdx < pendingMembers.length) {
+      for (const config of accountConfigs) {
+        if (this._multiInviteJob?.status !== 'running') break
+        if (memberIdx >= pendingMembers.length) break
+
+        const member = pendingMembers[memberIdx]
+        const channel = config.channels[globalInvited % config.channels.length] || channels[0]
+
+        try {
+          const result = await config.session.inviteToChannel(channel, {
+            userId: member.user_id,
+            accessHash: member.access_hash,
+            username: member.username,
+            firstName: member.first_name,
+          })
+
+          if (result.rateLimited) {
+            await db.dbUpdateMemberInviteStatus(member.id, 'failed', 'PEER_FLOOD')
+            this.log(config.session.phone, `PeerFlood — пропускаем аккаунт`, 'warn', 'telegram')
+            globalFailed++
+          } else if (result.success) {
+            await db.dbUpdateMemberInviteStatus(member.id, 'invited')
+            globalInvited++
+            this.log(config.session.phone, `Приглашён ${member.username || member.user_id} → ${channel} [${globalInvited}]`, 'info', 'telegram')
+          } else {
+            const isPrivacy = ['USER_PRIVACY_RESTRICTED', 'USER_NOT_MUTUAL_CONTACT', 'USER_CHANNELS_TOO_MUCH', 'USER_KICKED'].includes(result.error)
+            await db.dbUpdateMemberInviteStatus(member.id, isPrivacy ? 'skipped' : 'failed', result.error)
+            if (isPrivacy) globalSkipped++
+            else globalFailed++
+          }
+        } catch (err) {
+          await db.dbUpdateMemberInviteStatus(member.id, 'failed', err.message)
+          globalFailed++
+        }
+
+        memberIdx++
+
+        this._multiInviteJob.invited = globalInvited
+        this._multiInviteJob.failed = globalFailed
+        this._multiInviteJob.skipped = globalSkipped
+        this.broadcast({ type: 'tg_multi_invite_progress', invited: globalInvited, failed: globalFailed, skipped: globalSkipped })
+
+        // Per-account delay
+        const delay = (config.delayMin + Math.random() * (config.delayMax - config.delayMin)) * 1000
+        await new Promise(r => setTimeout(r, delay))
+      }
+    }
+
+    this._multiInviteJob.status = 'completed'
+    this.broadcast({ type: 'tg_multi_invite_complete', invited: globalInvited, failed: globalFailed, skipped: globalSkipped })
+    return { invited: globalInvited, failed: globalFailed, skipped: globalSkipped }
+  }
+
+  stopMultiInvite() {
+    if (this._multiInviteJob) this._multiInviteJob.status = 'stopped'
+  }
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // Activity Logging (SaaS)
+  // ══════════════════════════════════════════════════════════════════════════
+
+  async logActivity(accountId, platform, action, details = null) {
+    try {
+      await db.supabase.from('wa_activity_log').insert({
+        account_id: accountId,
+        platform,
+        action,
+        details,
+      })
+    } catch (_) {
+      // Silently fail — activity logging should never break core flow
+    }
   }
 }
 

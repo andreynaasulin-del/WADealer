@@ -332,4 +332,46 @@ export default async function telegramRoutes(fastify) {
   fastify.get('/api/telegram/invite/status', async (req, reply) => {
     return reply.send(orchestrator.getInviteStatus())
   })
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // PER-ACCOUNT SETTINGS
+  // ══════════════════════════════════════════════════════════════════════════
+
+  // ── GET /api/telegram/accounts/:id/settings — get account settings
+  fastify.get('/api/telegram/accounts/:id/settings', async (req, reply) => {
+    const settings = await orchestrator.getTelegramAccountSettings(req.params.id)
+    return reply.send(settings)
+  })
+
+  // ── PUT /api/telegram/accounts/:id/settings — update account settings
+  fastify.put('/api/telegram/accounts/:id/settings', async (req, reply) => {
+    const settings = await orchestrator.updateTelegramAccountSettings(req.params.id, req.body.settings || req.body)
+    return reply.send(settings)
+  })
+
+  // ── PUT /api/telegram/accounts/:id/proxy — update account proxy
+  fastify.put('/api/telegram/accounts/:id/proxy', async (req, reply) => {
+    const result = await orchestrator.updateTelegramAccountProxy(req.params.id, req.body.proxy_string)
+    return reply.send(result)
+  })
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // MULTI-ACCOUNT INVITE
+  // ══════════════════════════════════════════════════════════════════════════
+
+  fastify.post('/api/telegram/invite/multi-start', async (req, reply) => {
+    const { channels, daily_limit_per_account, delay_between_invites_sec } = req.body
+    if (!channels || !Array.isArray(channels) || channels.length === 0) {
+      return reply.code(400).send({ error: 'channels обязателен (массив)' })
+    }
+    orchestrator.startMultiAccountInvite(channels, daily_limit_per_account, delay_between_invites_sec).catch(err => {
+      orchestrator.log(null, `Multi-invite error: ${err.message}`, 'error', 'telegram')
+    })
+    return reply.send({ ok: true })
+  })
+
+  fastify.post('/api/telegram/invite/multi-stop', async (req, reply) => {
+    orchestrator.stopMultiInvite()
+    return reply.send({ ok: true })
+  })
 }

@@ -1106,4 +1106,74 @@ export async function dbGetPendingScrapedMembers(limit = 50) {
   return data || []
 }
 
+// ─── Heartbeat ──────────────────────────────────────────────────────────────
+
+export async function dbUpdateHeartbeat(table, id) {
+  await supabase.rpc('update_heartbeat', { p_table: table, p_id: id })
+}
+
+export async function dbIncrementHeartbeatFailures(table, id) {
+  const { data } = await supabase.rpc('increment_heartbeat_failures', { p_table: table, p_id: id })
+  return data || 0
+}
+
+// ─── SaaS Users ─────────────────────────────────────────────────────────────
+
+export async function dbGetUserById(userId) {
+  const { data, error } = await supabase
+    .from('wa_users')
+    .select('*')
+    .eq('id', userId)
+    .single()
+  if (error) return null
+  return data
+}
+
+export async function dbGetAdminUser() {
+  const { data, error } = await supabase
+    .from('wa_users')
+    .select('*')
+    .eq('is_admin', true)
+    .limit(1)
+    .single()
+  if (error) return null
+  return data
+}
+
+export async function dbGetTiers() {
+  const { data, error } = await supabase
+    .from('wa_tiers')
+    .select('*')
+    .order('price_monthly', { ascending: true })
+  if (error) return []
+  return data || []
+}
+
+// ─── Activity Log ───────────────────────────────────────────────────────────
+
+export async function dbLogActivity(accountId, platform, action, details = null) {
+  await supabase.from('wa_activity_log').insert({
+    account_id: accountId,
+    platform,
+    action,
+    details,
+  })
+}
+
+export async function dbGetActivityStats(startDate = null) {
+  const start = startDate || new Date(new Date().setHours(0, 0, 0, 0)).toISOString()
+  const { data, error } = await supabase
+    .from('wa_activity_log')
+    .select('action', { count: 'exact' })
+    .gte('created_at', start)
+  if (error) return {}
+
+  const stats = {}
+  for (const row of data || []) {
+    stats[row.action] = (stats[row.action] || 0) + 1
+  }
+  return stats
+}
+
+export { supabase }
 export default supabase

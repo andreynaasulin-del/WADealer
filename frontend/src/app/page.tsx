@@ -210,9 +210,24 @@ export default function PlatformSelector() {
         <div className="flex flex-col items-center gap-8">
           {/* Title */}
           <div className="text-center">
-            <h1 className="text-zinc-400 text-lg tracking-widest uppercase mb-1">Выберите платформу</h1>
-            <p className="text-zinc-600 text-xs">Управление рассылками и сессиями</p>
+            <h1 className="text-zinc-400 text-lg tracking-widest uppercase mb-1">WADealer</h1>
+            <p className="text-zinc-600 text-xs">Платформа автоматизации Telegram & WhatsApp</p>
           </div>
+
+          {/* Dashboard button */}
+          <button
+            onClick={() => router.push('/dashboard')}
+            className="w-full max-w-[540px] bg-zinc-900/60 border border-zinc-800 rounded-xl p-4
+                       hover:border-green-500/40 hover:bg-green-950/10 transition-all duration-300
+                       cursor-pointer flex items-center gap-4"
+          >
+            <div className="text-2xl">📊</div>
+            <div className="text-left flex-1">
+              <h2 className="text-green-400 font-bold text-sm tracking-wider">Dashboard</h2>
+              <p className="text-zinc-500 text-xs">Статистика, heartbeat, тарифы</p>
+            </div>
+            <span className="text-zinc-700 text-xs">→</span>
+          </button>
 
           {/* Cards */}
           <div className="flex flex-col sm:flex-row gap-6">

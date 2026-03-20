@@ -103,6 +103,10 @@ export class TelegramSession extends EventEmitter {
     this.firstName = null
     this.lastName = null
     this.connectedAt = null
+    this.proxyString = null        // HTTP/SOCKS5 proxy per account
+    this.reconnectAttempts = 0
+    this._reconnectTimer = null
+    this._disconnectHandler = null // connection drop handler
   }
 
   log(message, level = 'info') {
@@ -111,17 +115,68 @@ export class TelegramSession extends EventEmitter {
   }
 
   /**
+   * Schedule auto-reconnect with exponential backoff.
+   */
+  _scheduleReconnect(reason) {
+    if (this._reconnectTimer) return
+    const delay = Math.min(5_000 * Math.pow(2, this.reconnectAttempts), 120_000) // 5s → 10s → 20s → ... → 120s max
+    this.reconnectAttempts++
+    if (this.reconnectAttempts > 15) this.reconnectAttempts = 0 // reset after many failures
+
+    this.log(`Автопереподключение через ${Math.round(delay/1000)}с (попытка ${this.reconnectAttempts}, причина: ${reason})`, 'warn')
+
+    this._reconnectTimer = setTimeout(async () => {
+      this._reconnectTimer = null
+      try {
+        await this.connect()
+      } catch (err) {
+        this.log(`Реконнект ошибка: ${err.message}`, 'error')
+        if (this.sessionString) this._scheduleReconnect('reconnect_failed')
+      }
+    }, delay)
+  }
+
+  /**
+   * Build GramJS connection options with optional proxy.
+   */
+  _buildConnectionOpts() {
+    const opts = {
+      connectionRetries: 5,
+      retryDelay: 2000,
+      useWSS: false,
+      autoReconnect: true,
+    }
+
+    // Proxy support: parse proxyString (ip:port:user:pass or socks5://user:pass@ip:port)
+    if (this.proxyString) {
+      try {
+        const parts = this.proxyString.split(':')
+        if (parts.length === 4) {
+          opts.proxy = {
+            ip: parts[0],
+            port: parseInt(parts[1]),
+            username: parts[2],
+            password: parts[3],
+            socksType: 5, // SOCKS5
+          }
+          this.log(`Прокси: ${parts[0]}:${parts[1]}`)
+        }
+      } catch (err) {
+        this.log(`Ошибка парсинга прокси: ${err.message}`, 'warn')
+      }
+    }
+
+    return opts
+  }
+
+  /**
    * Connect to Telegram. If we have a saved session string, auto-authenticate.
    * Otherwise, just establish the connection (ready for requestCode).
    */
   async connect() {
     const session = new StringSession(this.sessionString)
-    this.client = new TelegramClient(session, getApiId(), getApiHash(), {
-      connectionRetries: 5,
-      retryDelay: 2000,
-      useWSS: false,
-      autoReconnect: true,
-    })
+    const opts = this._buildConnectionOpts()
+    this.client = new TelegramClient(session, getApiId(), getApiHash(), opts)
 
     // AUTH_KEY_DUPLICATED fix: retry with increasing delays
     for (let attempt = 1; attempt <= 3; attempt++) {
@@ -137,7 +192,7 @@ export class TelegramSession extends EventEmitter {
           this.client = new TelegramClient(
             new StringSession(this.sessionString),
             getApiId(), getApiHash(),
-            { connectionRetries: 5, retryDelay: 2000, useWSS: false, autoReconnect: true }
+            this._buildConnectionOpts()
           )
         } else {
           throw err
@@ -154,7 +209,11 @@ export class TelegramSession extends EventEmitter {
         this.lastName = me.lastName || null
         this.status = 'active'
         this.connectedAt = new Date().toISOString()
+        this.reconnectAttempts = 0 // reset on success
         this.log('Аккаунт переподключён ✓')
+
+        // Setup connection drop detection
+        this._setupDisconnectHandler()
 
         await this.orchestrator.db.dbUpdateTelegramAccountStatus(this.id, 'active')
         this.orchestrator.broadcast({
@@ -632,66 +691,104 @@ export class TelegramSession extends EventEmitter {
   }
 
   /**
-   * Invite a single user to a channel.
-   * @param {string|number} channel — target channel username or ID
-   * @param {{ userId: number, accessHash: string }} user
+   * Invite a single user to a channel/group.
+   * @param {string|number} channel — target channel/group username or ID
+   * @param {{ userId: number|string, accessHash: string, username?: string, firstName?: string }} user
    * @returns {{ success: boolean, error?: string, rateLimited?: boolean }}
    */
   async inviteToChannel(channel, user) {
     if (this.status !== 'active' || !this.client) throw new Error('Аккаунт не активен')
 
-    // Resolve user entity — use username if available (access_hash is session-specific)
-    let resolvedEntity
-    try {
-      if (user.username) {
-        resolvedEntity = await this.client.getEntity(user.username)
-      } else {
-        resolvedEntity = await this.client.getEntity(
-          new Api.PeerUser({ userId: user.userId })
-        )
-      }
-    } catch (err) {
-      // Last resort: try with raw InputUser
+    const uname = user.username ? user.username.replace(/^@/, '') : null
+    this.log(`Инвайт: ${uname || user.userId} → ${channel}`)
+
+    // ── Step 1: Resolve user to InputUser ──────────────────────────────
+    let inputUser
+
+    // Method A: resolve by username (most reliable for cross-session)
+    if (uname) {
       try {
-        resolvedEntity = new Api.InputUser({
+        const result = await this.client.invoke(
+          new Api.contacts.ResolveUsername({ username: uname })
+        )
+        if (result?.users?.length > 0) {
+          const u = result.users[0]
+          inputUser = new Api.InputUser({
+            userId: u.id,
+            accessHash: u.accessHash,
+          })
+          this.log(`  ✓ Resolved @${uname} → id=${u.id}, hash=${u.accessHash}`)
+        }
+      } catch (err) {
+        this.log(`  ✗ ResolveUsername @${uname} failed: ${err.errorMessage || err.message}`, 'warn')
+      }
+    }
+
+    // Method B: try getEntity with stored userId (works if we've seen user in shared chats)
+    if (!inputUser) {
+      try {
+        const entity = await this.client.getEntity(
+          BigInt(user.userId)
+        )
+        if (entity) {
+          inputUser = new Api.InputUser({
+            userId: entity.id,
+            accessHash: entity.accessHash,
+          })
+          this.log(`  ✓ getEntity(${user.userId}) → hash=${entity.accessHash}`)
+        }
+      } catch (err) {
+        this.log(`  ✗ getEntity(${user.userId}) failed: ${err.message}`, 'warn')
+      }
+    }
+
+    // Method C: raw InputUser with stored access_hash (only works same session)
+    if (!inputUser) {
+      if (user.accessHash && user.accessHash !== '0') {
+        inputUser = new Api.InputUser({
           userId: BigInt(user.userId),
-          accessHash: BigInt(user.accessHash || '0'),
+          accessHash: BigInt(user.accessHash),
         })
-      } catch (_) {
+        this.log(`  ⚠ Using stored accessHash for ${user.userId}`)
+      } else {
+        this.log(`  ✗ No way to resolve user ${user.userId} (no username, no hash)`, 'error')
         return { success: false, error: 'CANNOT_RESOLVE_USER' }
       }
     }
 
+    // ── Step 2: Resolve channel ────────────────────────────────────────
+    let channelEntity
     try {
-      // Add as contact first
-      await this.client.invoke(new Api.contacts.AddContact({
-        id: resolvedEntity,
-        firstName: user.firstName || '',
-        lastName: '',
-        phone: '',
-        addPhonePrivacyException: false,
-      }))
-    } catch (_) { /* ignore */ }
+      channelEntity = await this.client.getEntity(channel)
+      this.log(`  ✓ Channel resolved: ${channelEntity.className} id=${channelEntity.id}`)
+    } catch (err) {
+      this.log(`  ✗ Cannot resolve channel ${channel}: ${err.message}`, 'error')
+      return { success: false, error: 'CANNOT_RESOLVE_CHANNEL' }
+    }
 
+    // ── Step 3: InviteToChannel ────────────────────────────────────────
     try {
-      const channelEntity = await this.client.getEntity(channel)
       const result = await this.client.invoke(new Api.channels.InviteToChannel({
         channel: channelEntity,
-        users: [resolvedEntity],
+        users: [inputUser],
       }))
 
       // Check missingInvitees
       const missingArr = Array.isArray(result?.missingInvitees) ? result.missingInvitees : []
       if (missingArr.length > 0) {
+        this.log(`  ⚠ Missing invitee: ${uname || user.userId}`)
         return { success: false, error: 'MISSING_INVITEE' }
       }
 
+      this.log(`  ✅ Успешно приглашён: ${uname || user.userId}`)
       return { success: true }
     } catch (err) {
       const msg = err.errorMessage || err.message || 'Unknown error'
+      this.log(`  ❌ InviteToChannel error: ${msg}`, 'error')
 
       if (msg === 'USER_PRIVACY_RESTRICTED' || msg === 'USER_NOT_MUTUAL_CONTACT'
-          || msg === 'USER_CHANNELS_TOO_MUCH' || msg === 'USER_KICKED') {
+          || msg === 'USER_CHANNELS_TOO_MUCH' || msg === 'USER_KICKED'
+          || msg === 'USER_ID_INVALID' || msg === 'INPUT_USER_DEACTIVATED') {
         return { success: false, error: msg }
       }
       if (msg === 'PEER_FLOOD' || msg === 'PeerFloodError') {
@@ -709,6 +806,76 @@ export class TelegramSession extends EventEmitter {
   }
 
   /**
+   * Setup handler for connection drops.
+   * Monitors the underlying connection and auto-reconnects.
+   */
+  _setupDisconnectHandler() {
+    if (!this.client) return
+
+    // GramJS fires 'disconnected' when connection drops
+    const handler = async () => {
+      if (this.status !== 'active') return // already handling disconnect
+      this.log('Соединение потеряно', 'warn')
+      this.status = 'disconnected'
+      await this.orchestrator.db.dbUpdateTelegramAccountStatus(this.id, 'disconnected').catch(() => {})
+      this.orchestrator.broadcast({
+        type: 'tg_account_update',
+        accountId: this.id,
+        status: 'disconnected',
+      })
+
+      // Auto-reconnect if we have session string
+      if (this.sessionString) {
+        this._scheduleReconnect('connection_drop')
+      }
+    }
+
+    // Remove old handler if exists
+    if (this._disconnectHandler) {
+      this.client.removeEventListener(this._disconnectHandler)
+    }
+    this._disconnectHandler = handler
+
+    // GramJS connection state monitoring — check periodically
+    // since GramJS doesn't have a clean disconnect event
+    if (this._connectionMonitor) clearInterval(this._connectionMonitor)
+    this._connectionMonitor = setInterval(() => {
+      if (this.status === 'active' && this.client && !this.client.connected) {
+        this.log('Connection monitor: клиент отключён', 'warn')
+        clearInterval(this._connectionMonitor)
+        this._connectionMonitor = null
+        handler()
+      }
+    }, 15_000) // check every 15s
+  }
+
+  /**
+   * Gracefully disconnect the account.
+   */
+  async disconnect() {
+    clearTimeout(this._reconnectTimer)
+    this._reconnectTimer = null
+    if (this._connectionMonitor) {
+      clearInterval(this._connectionMonitor)
+      this._connectionMonitor = null
+    }
+
+    if (this.client?.connected) {
+      try { await this.client.disconnect() } catch (_) {}
+    }
+
+    this.status = 'disconnected'
+    this.connectedAt = null
+    await this.orchestrator.db.dbUpdateTelegramAccountStatus(this.id, 'disconnected').catch(() => {})
+    this.orchestrator.broadcast({
+      type: 'tg_account_update',
+      accountId: this.id,
+      status: 'disconnected',
+    })
+    this.log('Отключён')
+  }
+
+  /**
    * Get account state for API response.
    */
   getState() {
@@ -720,6 +887,8 @@ export class TelegramSession extends EventEmitter {
       last_name: this.lastName,
       status: this.status,
       connectedAt: this.connectedAt,
+      proxyString: this.proxyString ? this.proxyString.split(':')[0] + ':***' : null,
+      reconnectAttempts: this.reconnectAttempts,
     }
   }
 }

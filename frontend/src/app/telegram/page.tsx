@@ -8,6 +8,7 @@ import TelegramCampaignController from '@/components/TelegramCampaignController'
 import TelegramQuickSend from '@/components/TelegramQuickSend'
 import TelegramScrapeInvite from '@/components/TelegramScrapeInvite'
 import LiveLogs, { type LogEntry } from '@/components/LiveLogs'
+import AccountSettingsPanel from '@/components/AccountSettingsPanel'
 
 const MAX_LOGS = 500
 
@@ -21,6 +22,7 @@ export default function TelegramDashboard() {
   const [connected, setConnected]                 = useState(false)
   const [time, setTime]                           = useState('')
   const [selectedAccountId, setSelectedAccountId] = useState<string | null>(null)
+  const [settingsAccountId, setSettingsAccountId] = useState<string | null>(null)
 
   // ── Auth redirect ─────────────────────────────────────────────────────────
   useEffect(() => {
@@ -252,6 +254,35 @@ export default function TelegramDashboard() {
               accounts={accounts}
               selectedAccountId={selectedAccountId}
             />
+          </div>
+
+          {/* Module C2 — Account Settings */}
+          <div className="bg-zinc-900/50 border border-zinc-800 rounded-lg p-4">
+            <div className="flex items-center justify-between mb-3">
+              <h3 className="text-xs font-bold text-zinc-400 tracking-wider uppercase">Настройки аккаунтов</h3>
+              {accounts.length > 0 && !settingsAccountId && (
+                <div className="flex gap-1">
+                  {accounts.filter(a => a.status === 'active').map(a => (
+                    <button
+                      key={a.id}
+                      onClick={() => setSettingsAccountId(a.id)}
+                      className="text-[10px] bg-zinc-800 hover:bg-zinc-700 text-zinc-300 border border-zinc-700 rounded px-2 py-1 cursor-pointer transition-colors"
+                    >
+                      {a.username ? `@${a.username}` : a.phone}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+            {settingsAccountId ? (
+              <AccountSettingsPanel
+                account={accounts.find(a => a.id === settingsAccountId)!}
+                onClose={() => setSettingsAccountId(null)}
+                onUpdate={loadAccounts}
+              />
+            ) : (
+              <p className="text-zinc-600 text-xs">Выберите аккаунт для настройки модулей (инвайтинг, лайки, комментинг, DM)</p>
+            )}
           </div>
 
           {/* Module D — Quick Send */}

@@ -12,6 +12,12 @@
       "runtimeExecutable": "npm",
       "runtimeArgs": ["run", "dev", "--prefix", "frontend"],
       "port": 3000
+    },
+    {
+      "name": "Tahles",
+      "runtimeExecutable": "pnpm",
+      "runtimeArgs": ["--dir", "/Users/elene/Desktop/MY HARD WORKIN RESULT PROJECTS/tahles", "dev:web"],
+      "port": 3000
     }
   ]
 }

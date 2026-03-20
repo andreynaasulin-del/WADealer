@@ -247,9 +247,32 @@ export const api = {
         req<{ ok: boolean }>('/telegram/invite/start', {
           method: 'POST', body: JSON.stringify({ account_id: accountId, target_channel: targetChannel, daily_limit: dailyLimit }),
         }),
+      multiStart: (channels: string[], dailyLimitPerAccount?: number, delayBetweenInvitesSec?: number) =>
+        req<{ ok: boolean }>('/telegram/invite/multi-start', {
+          method: 'POST', body: JSON.stringify({ channels, daily_limit_per_account: dailyLimitPerAccount, delay_between_invites_sec: delayBetweenInvitesSec }),
+        }),
+      multiStop: () => req<{ ok: boolean }>('/telegram/invite/multi-stop', { method: 'POST', body: '{}' }),
       stop: () => req<{ ok: boolean }>('/telegram/invite/stop', { method: 'POST', body: '{}' }),
       status: () => req<InviteStatus>('/telegram/invite/status'),
     },
+    settings: {
+      get: (accountId: string) => req<AccountSettings>(`/telegram/accounts/${accountId}/settings`),
+      update: (accountId: string, settings: Partial<AccountSettings>) =>
+        req<AccountSettings>(`/telegram/accounts/${accountId}/settings`, {
+          method: 'PUT', body: JSON.stringify({ settings }),
+        }),
+      updateProxy: (accountId: string, proxyString: string | null) =>
+        req<{ id: string; proxy_string: string | null }>(`/telegram/accounts/${accountId}/proxy`, {
+          method: 'PUT', body: JSON.stringify({ proxy_string: proxyString }),
+        }),
+    },
+  },
+
+  // ─── Dashboard ──────────────────────────────────────────────────────────────
+  dashboard: {
+    get: () => req<DashboardStats>('/dashboard'),
+    tiers: () => req<Tier[]>('/tiers'),
+    heartbeat: () => req<{ ok: boolean; ts: string }>('/heartbeat'),
   },
 }
 
@@ -339,8 +362,88 @@ export interface TelegramAccount {
   status: 'disconnected' | 'awaiting_code' | 'awaiting_password' | 'qr_pending' | 'active' | 'error'
   error_msg: string | null
   connectedAt: string | null
+  proxyString: string | null
+  reconnectAttempts: number
+  settings?: AccountSettings
   created_at: string
   updated_at: string
+}
+
+// ─── Account Settings Types ─────────────────────────────────────────────────
+
+export interface InvitingSettings {
+  enabled: boolean
+  daily_limit: number
+  delay_min: number
+  delay_max: number
+  channels: string[]
+}
+
+export interface StoryLikingSettings {
+  enabled: boolean
+  interval_min: number
+  interval_max: number
+  like_probability: number
+}
+
+export interface NeuroCommentingSettings {
+  enabled: boolean
+  ai_model: 'grok' | 'claude' | 'gpt'
+  comment_interval_min: number
+  comment_interval_max: number
+  max_daily: number
+}
+
+export interface MassDmSettings {
+  enabled: boolean
+  daily_limit: number
+  delay_min: number
+  delay_max: number
+  template: string
+}
+
+export interface AccountSettings {
+  inviting: InvitingSettings
+  story_liking: StoryLikingSettings
+  neuro_commenting: NeuroCommentingSettings
+  mass_dm: MassDmSettings
+}
+
+// ─── Dashboard Types ─────────────────────────────────────────────────────────
+
+export interface DashboardStats {
+  whatsapp: Stats
+  telegram: TelegramStats
+  scraped: ScrapedMembersStats
+  heartbeat: {
+    tg_alive: number
+    tg_dead: number
+    wa_alive: number
+    wa_dead: number
+  }
+  queues: {
+    wa: { status: string; size: number }
+    tg: { status: string; size: number }
+  }
+  activity: Record<string, number>
+  campaigns: {
+    wa_running: number
+    wa_total: number
+    tg_running: number
+    tg_total: number
+  }
+  invite: InviteStatus
+  scrape: ScrapeStatus
+}
+
+export interface Tier {
+  id: string
+  display_name: string
+  max_tg_accounts: number
+  max_wa_sessions: number
+  max_daily_messages: number
+  features: Record<string, boolean>
+  price_monthly: number
 }
 
 export interface TelegramCampaign {
