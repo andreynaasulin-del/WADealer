@@ -15,29 +15,15 @@ const MAX_DMS_PER_ACCOUNT_PER_DAY = 25
 const DM_DELAY_MIN = 3 * 60_000   // 3 min minimum between DMs
 const DM_DELAY_MAX = 8 * 60_000   // 8 min maximum between DMs
 
-// Message templates — Hebrew (Israel target market)
-const MESSAGES_HE = [
-  (name) => `היי${name ? ' ' + name : ''} 😊\nאת רוצה לפרסם את עצמך בחינם?\nיש לנו אתר חדש ודיסקרטי לפרסום — www.tahles.top\nאם מעניין אותך, מלאי שאלון קצר דרך הבוט: @Tahlesbot ✨`,
+// Message templates — bilingual Hebrew + English (Israel market)
+const MESSAGES = [
+  (name) => `שלום${name ? ' ' + name : ''}, אני מנהל צוות Tahles ורוצה להציע לך פרסום מודעה חינמי, בו לקוחות ייצרו איתך קשר ישירות דרך וואטסאפ ללא מתווכים או עמלות. 🤍\nהאם זה מעניין אותך?\n\nHey${name ? ' ' + name : ''}, I'm the Tahles team manager and I'd like to offer you a free ad listing where clients contact you directly via WhatsApp — no middlemen, no fees. 🤍\nInterested?`,
 
-  (name) => `שלום${name ? ' ' + name : ''} 👋\nאנחנו מציעים פרסום חינם באתר דיסקרטי ובטוח — www.tahles.top\nרוצה לנסות? שלחי הודעה לבוט שלנו: @Tahlesbot 🌟`,
+  (name) => `היי${name ? ' ' + name : ''}, אנחנו מפלטפורמת Tahles ומציעים לך לפרסם את עצמך בחינם באתר שלנו. לקוחות פונים אלייך ישירות בוואטסאפ, בלי עמלות. 🤍\nרוצה לשמוע עוד?\n\nHi${name ? ' ' + name : ''}, we're from the Tahles platform and we'd like to offer you a free listing on our site. Clients reach you directly on WhatsApp, no commissions. 🤍\nWant to hear more?`,
 
-  (name) => `היי${name ? ' ' + name : ''} 💫\nמחפשת פלטפורמה לפרסום? יש לנו אתר חדש — www.tahles.top\nפרסום בחינם, דיסקרטי ובטוח.\nלפרטים ורישום: @Tahlesbot`,
+  (name) => `שלום${name ? ' ' + name : ''}, אני מצוות Tahles. יש לנו פלטפורמה חדשה שמאפשרת לך לקבל לקוחות ישירות לוואטסאפ — בחינם, בלי מתווכים ובלי עמלות. 🤍\nמעניין אותך?\n\nHey${name ? ' ' + name : ''}, I'm from the Tahles team. We have a new platform that lets you get clients directly to your WhatsApp — free, no middlemen, no fees. 🤍\nInterested?`,
 
-  (name) => `הי${name ? ' ' + name : ''} 🌸\nרציתי להציע לך פרסום חינם באתר שלנו www.tahles.top\nאתר דיסקרטי ואיכותי.\nמעניין? שלחי /start לבוט @Tahlesbot`,
-]
-
-// Russian variants
-const MESSAGES_RU = [
-  (name) => `Привет${name ? ' ' + name : ''} 😊\nХочешь разместить анкету бесплатно?\nУ нас новый сайт — www.tahles.top\nДискретно и безопасно. Заполни анкету через бота: @Tahlesbot ✨`,
-
-  (name) => `Привет${name ? ' ' + name : ''} 👋\nМы предлагаем бесплатное размещение на нашем сайте www.tahles.top\nЕсли интересно — напиши боту @Tahlesbot 🌟`,
-]
-
-// English variants
-const MESSAGES_EN = [
-  (name) => `Hey${name ? ' ' + name : ''} 😊\nWant to advertise yourself for free?\nCheck out our new platform — www.tahles.top\nDiscreet & safe. Register via @Tahlesbot ✨`,
-
-  (name) => `Hi${name ? ' ' + name : ''} 👋\nWe offer free listing on our platform www.tahles.top\nInterested? Message our bot: @Tahlesbot 🌟`,
+  (name) => `היי${name ? ' ' + name : ''}, הגעתי מצוות Tahles. אנחנו מציעים פרסום חינמי באתר שלנו — לקוחות יפנו אלייך ישירות בוואטסאפ ללא עמלות או תיווך. 🤍\nרוצה לנסות?\n\nHi${name ? ' ' + name : ''}, I'm reaching out from the Tahles team. We offer free advertising on our site — clients contact you directly via WhatsApp with no fees or middlemen. 🤍\nWant to try it?`,
 ]
 
 function pick(arr) {
@@ -46,20 +32,9 @@ function pick(arr) {
 
 function getMessageForGirl(girl) {
   const name = girl.first_name || ''
-  // Determine language from bio/name
-  const bio = (girl.bio || '').toLowerCase()
-  const allText = `${name} ${bio}`
-
-  // Hebrew characters present → Hebrew message
-  if (/[\u0590-\u05ff]/.test(allText)) {
-    return pick(MESSAGES_HE)(name)
-  }
-  // Russian characters → Russian
-  if (/[\u0400-\u04ff]/.test(allText)) {
-    return pick(MESSAGES_RU)(name)
-  }
-  // Default: Hebrew (Israel market)
-  return pick(MESSAGES_HE)(name)
+  // Clean name: remove emojis and special chars for greeting
+  const cleanName = name.replace(/[^\w\s\u0590-\u05ff\u0400-\u04ff]/g, '').trim()
+  return pick(MESSAGES)(cleanName)
 }
 
 export class GirlsDmEngine {
