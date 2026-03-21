@@ -107,16 +107,22 @@ export class Session extends EventEmitter {
 
   _scheduleReconnect(reason, code) {
     if (this.stopped) return
-    // Exponential backoff: 3s → 6s → 12s → 24s → 48s → 60s (cap)
-    const delay = Math.min(3_000 * Math.pow(2, this.reconnectAttempts), 60_000)
-    this.reconnectAttempts++
 
-    // After 20 consecutive failures — reset backoff (maybe transient issue resolved)
-    if (this.reconnectAttempts > 20) {
-      this.reconnectAttempts = 0
+    // MAX 5 попыток — дальше просто offline, не спамим WA серверы
+    if (this.reconnectAttempts >= 5) {
+      this.log(`⛔ ${this.reconnectAttempts} неудачных попыток — уходим в offline. Перезапусти вручную.`, 'error')
+      this.status = 'offline'
+      this.orchestrator.broadcast({ type: 'session_update', phone: this.phone, status: 'offline', qrCode: null })
+      this.orchestrator.db.dbUpdateSessionStatus(this.phone, 'offline').catch(() => {})
+      return
     }
 
-    this.log(`Авто-реконнект через ${Math.round(delay / 1000)}с (попытка ${this.reconnectAttempts}, причина: ${reason}, код: ${code})`, 'warn')
+    // Мягкий backoff: 10s → 30s → 60s → 120s → 300s (как реальный клиент)
+    const delays = [10_000, 30_000, 60_000, 120_000, 300_000]
+    const delay = delays[this.reconnectAttempts] || 300_000
+    this.reconnectAttempts++
+
+    this.log(`Реконнект через ${Math.round(delay / 1000)}с (попытка ${this.reconnectAttempts}/5, причина: ${reason})`, 'warn')
     this.status = 'reconnecting'
     this.orchestrator.broadcast({ type: 'session_update', phone: this.phone, status: 'reconnecting', qrCode: this.qrCode })
 
@@ -193,7 +199,7 @@ export class Session extends EventEmitter {
       this.orchestrator.broadcast({ type: 'session_update', phone: this.phone, status: this.status })
       this.log(`Подключение через ${connectionLabel}...`)
 
-      // ── STEP 4: Create socket ──
+      // ── STEP 4: Create socket (тихий как реальный телефон) ──
       const socketOpts = {
         version,
         auth: state,
@@ -201,12 +207,13 @@ export class Session extends EventEmitter {
         printQRInTerminal: false,
         logger: SILENT_LOGGER,
         syncFullHistory: false,
-        markOnlineOnConnect: false,
-        connectTimeoutMs: 60_000,
-        defaultQueryTimeoutMs: 60_000,
-        retryRequestDelayMs: 3_000,
-        keepAliveIntervalMs: 25_000,
+        markOnlineOnConnect: false,       // НЕ светимся при коннекте
+        connectTimeoutMs: 120_000,        // 2 мин — не торопимся
+        defaultQueryTimeoutMs: 120_000,
+        retryRequestDelayMs: 5_000,       // 5с между ретраями (не спамим)
+        keepAliveIntervalMs: 55_000,      // 55с — стандарт WA Web, не чаще
         emitOwnEvents: true,
+        generateHighQualityLinkPreview: false,  // меньше трафика
       }
       // Only add proxy if alive
       if (agent) {
@@ -215,16 +222,16 @@ export class Session extends EventEmitter {
       }
       this.sock = makeWASocket(socketOpts)
 
-      // ── STEP 5: Connect timeout — if not online in 90s, force reconnect ──
+      // ── STEP 5: Connect timeout — 3 мин, мягко ──
       this._connectTimeoutTimer = setTimeout(() => {
         this._connectTimeoutTimer = null
         if (this.status !== 'online' && this.status !== 'qr_pending' && this.status !== 'pairing_pending') {
-          this.log(`⏱ Таймаут подключения (90с) — принудительный реконнект`, 'warn')
+          this.log(`⏱ Таймаут подключения (3 мин) — пробуем реконнект`, 'warn')
           this._cleanup()
           this._startLock = false
           this._scheduleReconnect('connect_timeout', 0)
         }
-      }, 90_000)
+      }, 180_000)
 
       // ── EVENTS ────────────────────────────────────────────────────────────
 
@@ -261,31 +268,20 @@ export class Session extends EventEmitter {
           this.orchestrator.broadcast({ type: 'session_update', phone: this.phone, status: 'online', qrCode: null })
           await this.orchestrator.db.dbUpdateSessionStatus(this.phone, 'online')
 
-          // ── Keepalive: presence каждые 90 сек + WS health check ──
+          // ── Тихая проверка WS каждые 5 мин (без presence-спама) ──
           clearInterval(this._keepaliveTimer)
-          this._keepaliveTimer = setInterval(async () => {
+          this._keepaliveTimer = setInterval(() => {
             try {
               if (!this.sock || this.status !== 'online') return
-
-              // Check WebSocket is alive
               const ws = this.sock?.ws
               if (ws && typeof ws.readyState === 'number' && ws.readyState !== 1) {
-                this.log(`⚠ WebSocket dead (state=${ws.readyState}), реконнект...`, 'warn')
+                this.log(`⚠ WS не в сети (state=${ws.readyState}), реконнект...`, 'warn')
                 this._startLock = false
                 this._scheduleReconnect('ws_dead', ws.readyState)
-                return
               }
-
-              await this.sock.sendPresenceUpdate('available')
-            } catch (err) {
-              this.log(`Keepalive: ${err.message}`, 'warn')
-              // If presence fails, connection is probably dead
-              if (err.message?.includes('closed') || err.message?.includes('not open')) {
-                this._startLock = false
-                this._scheduleReconnect('keepalive_fail', err.message)
-              }
-            }
-          }, 90_000) // 90 seconds
+              // НЕ шлём sendPresenceUpdate — реальные телефоны этого не делают
+            } catch (_) {}
+          }, 300_000) // 5 минут — тихо и спокойно
         }
 
         if (connection === 'close') {
@@ -342,17 +338,23 @@ export class Session extends EventEmitter {
             await this.orchestrator.db.dbUpdateSessionStatus(this.phone, 'banned')
 
           } else if (code === 440) {
-            // 440 = connectionReplaced — часто ложное, реконнект через 10с
-            this.log(`440 connectionReplaced — реконнект через 10с...`, 'warn')
-            this._scheduleReconnect('440_replaced', code)
-
-          } else if (code === DisconnectReason.restartRequired || code === 515) {
-            this.log(`515 рестарт — реконнект через 2с...`, 'warn')
+            // 440 = connectionReplaced — кто-то открыл WA Web, ждём 2 мин
+            this.log(`440 connectionReplaced — ждём 2 мин перед реконнектом`, 'warn')
+            this.status = 'reconnecting'
+            this.orchestrator.broadcast({ type: 'session_update', phone: this.phone, status: 'reconnecting', qrCode: null })
             clearTimeout(this._reconnectTimer)
             this._reconnectTimer = setTimeout(() => {
               this._reconnectTimer = null
               if (!this.stopped) this.start()
-            }, 2_000)
+            }, 120_000) // 2 мин — дать время другой сессии закрыться
+
+          } else if (code === DisconnectReason.restartRequired || code === 515) {
+            this.log(`515 рестарт — реконнект через 15с`, 'warn')
+            clearTimeout(this._reconnectTimer)
+            this._reconnectTimer = setTimeout(() => {
+              this._reconnectTimer = null
+              if (!this.stopped) this.start()
+            }, 15_000) // 15с — не мгновенно, как нормальный клиент
 
           } else {
             // Всё остальное: timeout, 428, network drop, proxy error — РЕКОННЕКТ
@@ -531,11 +533,18 @@ export class Session extends EventEmitter {
       throw new Error(`Сессия ${this.phone} не в сети`)
     }
     const bareJid = `${normalizePhone(toPhone)}@s.whatsapp.net`
-    await this.sock.sendPresenceUpdate('composing', bareJid)
+
+    // 60% шанс показать "печатает" — как реальный юзер, не каждый раз
+    const showTyping = Math.random() < 0.6
+    if (showTyping) {
+      try { await this.sock.sendPresenceUpdate('composing', bareJid) } catch (_) {}
+    }
     const typingMs = humanTypingDuration(text.length)
-    this.log(`Печать ${(typingMs / 1000).toFixed(1)}с → ${toPhone}`)
     await sleep(typingMs)
-    await this.sock.sendPresenceUpdate('paused', bareJid)
+    if (showTyping) {
+      try { await this.sock.sendPresenceUpdate('paused', bareJid) } catch (_) {}
+    }
+
     const result = await this.sock.sendMessage(bareJid, { text })
     this.log(`Отправлено → ${toPhone}`)
     return result
