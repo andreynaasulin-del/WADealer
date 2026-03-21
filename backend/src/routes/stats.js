@@ -44,4 +44,23 @@ export default async function statsRoutes(fastify) {
       return reply.code(500).send({ error: err.message })
     }
   })
+
+  // ── WA Warmup ──────────────────────────────────────────────────────────────
+
+  // POST /api/warmup/start — start warmup cycle
+  fastify.post('/api/warmup/start', async (_req, reply) => {
+    orchestrator.warmup.start()
+    return reply.send({ ok: true, active: true })
+  })
+
+  // POST /api/warmup/stop — stop warmup cycle
+  fastify.post('/api/warmup/stop', async (_req, reply) => {
+    orchestrator.warmup.stop()
+    return reply.send({ ok: true, active: false })
+  })
+
+  // GET /api/warmup/status — check warmup status
+  fastify.get('/api/warmup/status', async (_req, reply) => {
+    return reply.send({ active: orchestrator.warmup.isActive })
+  })
 }

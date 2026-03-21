@@ -6,6 +6,7 @@ import { MessageQueue } from './queue.js'
 import { classifyLead } from './ai-classifier.js'
 import { generateAutoReply, extractConversationData } from './ai-responder.js'
 import { encryptCompact, decryptCompact } from './crypto.js'
+import { WarmupManager } from './warmup.js'
 import * as db from './db.js'
 
 /**
@@ -47,6 +48,9 @@ export class Orchestrator {
 
     /** Global LID → Phone map (WhatsApp Linked Devices resolution) */
     this._lidMap = new Map()
+
+    /** WA Warmup manager */
+    this.warmup = new WarmupManager(this)
 
     /** Per-phone reply lock — prevents concurrent AI replies to same contact */
     this._replyInProgress = new Set()
