@@ -374,4 +374,54 @@ export default async function telegramRoutes(fastify) {
     orchestrator.stopMultiInvite()
     return reply.send({ ok: true })
   })
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // GIRLS SCRAPER & DM CAMPAIGN
+  // ══════════════════════════════════════════════════════════════════════════
+
+  // ── POST /api/telegram/girls/scrape — scrape working girls from groups ──
+  fastify.post('/api/telegram/girls/scrape', async (req, reply) => {
+    const { groups } = req.body || {}
+    if (!groups || !Array.isArray(groups) || groups.length === 0) {
+      return reply.code(400).send({ error: 'groups[] required' })
+    }
+    // Run in background
+    orchestrator.scrapeGirlsFromGroups(groups).catch(err => {
+      orchestrator.log(null, `Girls scrape error: ${err.message}`, 'error')
+    })
+    return reply.send({ ok: true, message: `Скрейп запущен для ${groups.length} групп` })
+  })
+
+  // ── GET /api/telegram/girls/stats — girls DM stats ──────────────────────
+  fastify.get('/api/telegram/girls/stats', async (req, reply) => {
+    const stats = await db.dbGetGirlsStats()
+    const dmStats = orchestrator.girlsDm.getStats()
+    return reply.send({ ...stats, dm: dmStats })
+  })
+
+  // ── POST /api/telegram/girls/dm/start — start DM campaign ──────────────
+  fastify.post('/api/telegram/girls/dm/start', async (req, reply) => {
+    await orchestrator.girlsDm.start()
+    return reply.send({ ok: true, message: 'DM кампания запущена' })
+  })
+
+  // ── POST /api/telegram/girls/dm/stop — stop DM campaign ────────────────
+  fastify.post('/api/telegram/girls/dm/stop', async (req, reply) => {
+    orchestrator.girlsDm.stop()
+    return reply.send({ ok: true, message: 'DM кампания остановлена' })
+  })
+
+  // ── GET /api/telegram/girls — list scraped girls ────────────────────────
+  fastify.get('/api/telegram/girls', async (req, reply) => {
+    const { status, limit = 50, offset = 0 } = req.query
+    let query = db.supabase
+      .from('tg_girls')
+      .select('*', { count: 'exact' })
+      .order('score', { ascending: false })
+      .range(parseInt(offset), parseInt(offset) + parseInt(limit) - 1)
+    if (status) query = query.eq('dm_status', status)
+    const { data, count, error } = await query
+    if (error) return reply.code(500).send({ error: error.message })
+    return reply.send({ data, count })
+  })
 }

@@ -1106,6 +1106,93 @@ export async function dbGetPendingScrapedMembers(limit = 50) {
   return data || []
 }
 
+// ─── TG Girls (working girls scraper) ───────────────────────────────────────
+
+export async function dbUpsertGirl(girl) {
+  const row = {
+    user_id: girl.userId,
+    username: girl.username || null,
+    first_name: girl.firstName || null,
+    last_name: girl.lastName || null,
+    access_hash: girl.accessHash || null,
+    bio: girl.bio || null,
+    score: girl.score || 0,
+    signals: girl.signals || [],
+    source_group: girl.sourceGroup || null,
+  }
+  const { error } = await supabase
+    .from('tg_girls')
+    .upsert(row, { onConflict: 'user_id', ignoreDuplicates: false })
+  if (error) console.error('[DB] upsert girl error:', error.message)
+}
+
+export async function dbUpsertGirls(girls) {
+  if (!girls.length) return 0
+  const rows = girls.map(g => ({
+    user_id: g.userId,
+    username: g.username || null,
+    first_name: g.firstName || null,
+    last_name: g.lastName || null,
+    access_hash: g.accessHash || null,
+    bio: g.bio || null,
+    score: g.score || 0,
+    signals: g.signals || [],
+    source_group: g.sourceGroup || null,
+  }))
+  let inserted = 0
+  for (let i = 0; i < rows.length; i += 200) {
+    const chunk = rows.slice(i, i + 200)
+    const { error } = await supabase
+      .from('tg_girls')
+      .upsert(chunk, { onConflict: 'user_id', ignoreDuplicates: false })
+    if (error) console.error('[DB] upsert girls error:', error.message)
+    else inserted += chunk.length
+  }
+  return inserted
+}
+
+export async function dbGetPendingGirls(limit = 20) {
+  const { data, error } = await supabase
+    .from('tg_girls')
+    .select('*')
+    .eq('dm_status', 'pending')
+    .order('score', { ascending: false })
+    .limit(limit)
+  if (error) throw error
+  return data || []
+}
+
+export async function dbUpdateGirlDmStatus(id, status, sentBy = null, errorMsg = null) {
+  const updates = { dm_status: status }
+  if (status === 'sent') {
+    updates.dm_sent_at = new Date().toISOString()
+    if (sentBy) updates.dm_sent_by = sentBy
+  }
+  if (errorMsg) updates.dm_error = errorMsg
+  const { error } = await supabase
+    .from('tg_girls')
+    .update(updates)
+    .eq('id', id)
+  if (error) throw error
+}
+
+export async function dbGetGirlsStats() {
+  const [pending, sent, replied, failed, total] = await Promise.all([
+    supabase.from('tg_girls').select('id', { count: 'exact', head: true }).eq('dm_status', 'pending'),
+    supabase.from('tg_girls').select('id', { count: 'exact', head: true }).eq('dm_status', 'sent'),
+    supabase.from('tg_girls').select('id', { count: 'exact', head: true }).eq('dm_status', 'replied'),
+    supabase.from('tg_girls').select('id', { count: 'exact', head: true }).eq('dm_status', 'failed'),
+    supabase.from('tg_girls').select('id', { count: 'exact', head: true }),
+  ])
+  return {
+    pending: pending.count || 0,
+    sent: sent.count || 0,
+    replied: replied.count || 0,
+    failed: failed.count || 0,
+    total: total.count || 0,
+  }
+}
+
 // ─── Heartbeat ──────────────────────────────────────────────────────────────
 
 export async function dbUpdateHeartbeat(table, id) {

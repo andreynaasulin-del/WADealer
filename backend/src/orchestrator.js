@@ -7,6 +7,8 @@ import { classifyLead } from './ai-classifier.js'
 import { generateAutoReply, extractConversationData } from './ai-responder.js'
 import { encryptCompact, decryptCompact } from './crypto.js'
 import { WarmupManager } from './warmup.js'
+import { scrapeWorkingGirls } from './girls-scraper.js'
+import { GirlsDmEngine } from './girls-dm.js'
 import * as db from './db.js'
 
 /**
@@ -51,6 +53,9 @@ export class Orchestrator {
 
     /** WA Warmup manager */
     this.warmup = new WarmupManager(this)
+
+    /** Girls DM engine */
+    this.girlsDm = new GirlsDmEngine(this)
 
     /** Per-phone reply lock — prevents concurrent AI replies to same contact */
     this._replyInProgress = new Set()
@@ -1632,6 +1637,89 @@ export class Orchestrator {
       neuro_commenting: { enabled: false, ai_model: 'grok', comment_interval_min: 600, comment_interval_max: 1800, max_daily: 20 },
       mass_dm: { enabled: false, daily_limit: 30, delay_min: 60, delay_max: 180, template: '' },
     }
+  }
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // Girls Scraper & DM Campaign
+  // ══════════════════════════════════════════════════════════════════════════
+
+  /**
+   * Scrape working girls from a list of groups.
+   * Uses round-robin across available TG accounts to distribute load.
+   */
+  async scrapeGirlsFromGroups(groups) {
+    const activeAccounts = []
+    for (const [id, session] of this.telegramAccounts) {
+      if (session.status === 'active' && session.client?.connected) {
+        activeAccounts.push(session)
+      }
+    }
+    if (activeAccounts.length === 0) throw new Error('Нет активных TG аккаунтов')
+
+    let totalFound = 0
+    let accountIdx = 0
+
+    for (const group of groups) {
+      const session = activeAccounts[accountIdx % activeAccounts.length]
+      accountIdx++
+
+      this.log(null, `🔍 Скрейп девушек из ${group} через @${session.username}`, 'system')
+
+      try {
+        // First join the group if not already a member
+        try {
+          await session.joinGroup(group)
+          await new Promise(r => setTimeout(r, 3000)) // wait after join
+        } catch (e) {
+          if (!e.message?.includes('ALREADY_PARTICIPANT')) {
+            this.log(null, `⚠️ Не удалось вступить в ${group}: ${e.errorMessage || e.message}`, 'warn')
+          }
+        }
+
+        // Parse entity from link
+        let entity
+        const usernameMatch = group.match(/t\.me\/([a-zA-Z0-9_]+)$/)
+        const inviteMatch = group.match(/t\.me\/\+([a-zA-Z0-9_-]+)/) || group.match(/t\.me\/joinchat\/([a-zA-Z0-9_-]+)/)
+
+        if (usernameMatch) {
+          entity = usernameMatch[1]
+        } else if (inviteMatch) {
+          // For private groups, try to resolve from joined dialogs
+          try {
+            const dialogs = await session.client.getDialogs({ limit: 100 })
+            // Find matching dialog (might be tricky for invite links)
+            entity = dialogs.find(d => d.title)?.entity || group
+          } catch (_) {
+            this.log(null, `⚠️ Не удалось разрешить приватную группу ${group}`, 'warn')
+            continue
+          }
+        }
+
+        if (!entity) continue
+
+        const result = await scrapeWorkingGirls(session, entity, async (girl) => {
+          girl.sourceGroup = group
+          await db.dbUpsertGirl(girl)
+        })
+
+        totalFound += result.found
+        this.log(null, `✅ ${group}: найдено ${result.found} из ${result.total}`, 'system')
+
+        // Delay between groups: 30-60s
+        await new Promise(r => setTimeout(r, 30_000 + Math.random() * 30_000))
+
+      } catch (err) {
+        this.log(null, `❌ Ошибка скрейпа ${group}: ${err.errorMessage || err.message}`, 'error')
+        // If flood, wait and continue
+        if (err.errorMessage?.startsWith('FLOOD_WAIT')) {
+          const wait = parseInt(err.errorMessage.split('_').pop()) || 60
+          await new Promise(r => setTimeout(r, wait * 1000))
+        }
+      }
+    }
+
+    this.log(null, `🔍 Скрейп завершён: ${totalFound} девушек из ${groups.length} групп`, 'system')
+    return { totalFound, groupsProcessed: groups.length }
   }
 
   // ══════════════════════════════════════════════════════════════════════════
