@@ -907,6 +907,9 @@ export class Orchestrator {
 
     // ── HEARTBEAT: мониторинг всех аккаунтов в реальном времени ──
     setTimeout(() => this.startHeartbeat(), 60_000)
+
+    // ── WA WARMUP: автостарт прогрева аккаунтов ──
+    setTimeout(() => this.warmup.start(), 120_000) // через 2 мин после старта
   }
 
   /**
