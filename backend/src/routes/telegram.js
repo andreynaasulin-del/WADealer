@@ -411,6 +411,38 @@ export default async function telegramRoutes(fastify) {
     return reply.send({ ok: true, message: 'DM кампания остановлена' })
   })
 
+  // ── GET /api/telegram/girls/replies — read actual reply texts ───────────
+  fastify.get('/api/telegram/girls/replies', async (req, reply) => {
+    const { data: girls } = await db.supabase
+      .from('tg_girls')
+      .select('username,first_name,dm_sent_by')
+      .eq('dm_status', 'replied')
+    if (!girls?.length) return reply.send({ replies: [] })
+
+    const replies = []
+    for (const girl of girls) {
+      // Find the account session that sent the DM
+      const session = [...orchestrator.telegramAccounts.values()]
+        .find(s => s.username === girl.dm_sent_by && s.status === 'active')
+      if (!session?.client) {
+        replies.push({ girl: girl.username, name: girl.first_name, account: girl.dm_sent_by, messages: ['[аккаунт offline]'] })
+        continue
+      }
+      try {
+        const msgs = await session.client.getMessages(girl.username, { limit: 10 })
+        const conversation = msgs.reverse().map(m => ({
+          from: m.out ? girl.dm_sent_by : girl.username,
+          text: m.message || '[media]',
+          date: new Date(m.date * 1000).toISOString(),
+        }))
+        replies.push({ girl: girl.username, name: girl.first_name, account: girl.dm_sent_by, messages: conversation })
+      } catch (e) {
+        replies.push({ girl: girl.username, name: girl.first_name, account: girl.dm_sent_by, messages: [{ error: e.message }] })
+      }
+    }
+    return reply.send({ replies })
+  })
+
   // ── GET /api/telegram/girls — list scraped girls ────────────────────────
   fastify.get('/api/telegram/girls', async (req, reply) => {
     const { status, limit = 50, offset = 0 } = req.query
