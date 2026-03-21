@@ -1176,6 +1176,17 @@ export async function dbUpdateGirlDmStatus(id, status, sentBy = null, errorMsg =
   if (error) throw error
 }
 
+export async function dbGetGirlByUserId(userId) {
+  const { data, error } = await supabase
+    .from('tg_girls')
+    .select('*')
+    .eq('user_id', userId)
+    .limit(1)
+    .single()
+  if (error && error.code !== 'PGRST116') throw error // PGRST116 = no rows
+  return data || null
+}
+
 export async function dbGetGirlsStats() {
   const [pending, sent, replied, failed, total] = await Promise.all([
     supabase.from('tg_girls').select('id', { count: 'exact', head: true }).eq('dm_status', 'pending'),

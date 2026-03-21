@@ -7,10 +7,14 @@
  */
 
 import { Api } from 'telegram'
+import { NewMessage } from 'telegram/events/index.js'
 
 const MAX_DMS_PER_ACCOUNT_PER_DAY = 25
 const DM_DELAY_MIN = 3 * 60_000   // 3 min
 const DM_DELAY_MAX = 8 * 60_000   // 8 min
+
+// Auto-reply when a girl responds
+const AUTO_REPLY_HE = `תודה שענית! 🤍\nהנה הקישור לפרסום החינמי שלך — פשוט לחצי על START ומלאי את השאלון הקצר:\nhttps://t.me/Tahlesbot?start=publish\n\nThank you for responding! 🤍\nHere's your free listing link — just tap START and fill out the short form:\nhttps://t.me/Tahlesbot?start=publish`
 
 // Message templates — bilingual Hebrew + English
 const MESSAGES = [
@@ -41,6 +45,8 @@ export class GirlsDmEngine {
     this._dailySent = new Map() // accountId → count
     this._dayStart = null
     this._floodedAccounts = new Set() // accounts hit PEER_FLOOD today
+    this._replyHandlers = new Map() // accountId → handler (for cleanup)
+    this._repliedUsers = new Set() // user IDs already auto-replied to (avoid spam)
   }
 
   get isRunning() { return this._running }
@@ -55,6 +61,9 @@ export class GirlsDmEngine {
 
     // Start a worker for EACH active account
     this._startAllWorkers()
+
+    // Setup incoming message handlers for auto-reply
+    this._setupReplyHandlers()
   }
 
   stop() {
@@ -63,6 +72,7 @@ export class GirlsDmEngine {
       clearTimeout(timer)
     }
     this._workers.clear()
+    this._removeReplyHandlers()
     this.orchestrator.log(null, '⏹ Girls DM кампания остановлена', 'system')
   }
 
@@ -77,6 +87,65 @@ export class GirlsDmEngine {
       activeWorkers: this._workers.size,
       floodedAccounts: this._floodedAccounts.size,
     }
+  }
+
+  /**
+   * Setup GramJS event handlers on all active accounts to catch incoming DMs.
+   * When a girl replies, auto-send the bot link.
+   */
+  _setupReplyHandlers() {
+    for (const [id, session] of this.orchestrator.telegramAccounts) {
+      if (session.status !== 'active' || !session.client) continue
+      if (this._replyHandlers.has(id)) continue // already set
+
+      const handler = async (event) => {
+        try {
+          const msg = event.message
+          if (!msg || msg.out) return // skip outgoing
+          if (!msg.isPrivate) return // only private DMs
+
+          const senderId = msg.senderId ? Number(msg.senderId) : null
+          if (!senderId) return
+
+          // Check if this user is in our tg_girls table with status 'sent'
+          const girl = await this.orchestrator.db.dbGetGirlByUserId(senderId)
+          if (!girl || girl.dm_status !== 'sent') return
+
+          // Don't auto-reply twice
+          if (this._repliedUsers.has(senderId)) return
+          this._repliedUsers.add(senderId)
+
+          // Mark as replied in DB
+          await this.orchestrator.db.dbUpdateGirlDmStatus(girl.id, 'replied')
+
+          // Send bot link
+          await session.client.sendMessage(msg.chatId || senderId, { message: AUTO_REPLY_HE })
+
+          this.orchestrator.log(null,
+            `📨 💬 @${session.username} ← @${girl.username || senderId} ответила! Бот-ссылка отправлена`,
+            'system'
+          )
+        } catch (err) {
+          this.orchestrator.log(null, `📨 Reply handler error: ${err.message}`, 'warn')
+        }
+      }
+
+      session.client.addEventHandler(handler, new NewMessage({ incoming: true }))
+      this._replyHandlers.set(id, handler)
+    }
+
+    const count = this._replyHandlers.size
+    this.orchestrator.log(null, `📨 Auto-reply handlers установлены на ${count} аккаунтах`, 'system')
+  }
+
+  _removeReplyHandlers() {
+    for (const [id, handler] of this._replyHandlers) {
+      const session = this.orchestrator.telegramAccounts.get(id)
+      if (session?.client) {
+        try { session.client.removeEventHandler(handler, new NewMessage({ incoming: true })) } catch (_) {}
+      }
+    }
+    this._replyHandlers.clear()
   }
 
   _startAllWorkers() {
