@@ -104,36 +104,11 @@ export class TelegramSession extends EventEmitter {
     this.lastName = null
     this.connectedAt = null
     this.proxyString = null        // HTTP/SOCKS5 proxy per account
-    this.reconnectAttempts = 0
-    this._reconnectTimer = null
-    this._disconnectHandler = null // connection drop handler
   }
 
   log(message, level = 'info') {
     const label = this.username ? `@${this.username}` : this.phone
     this.orchestrator.log(label, message, level, 'telegram')
-  }
-
-  /**
-   * Schedule auto-reconnect with exponential backoff.
-   */
-  _scheduleReconnect(reason) {
-    if (this._reconnectTimer) return
-    const delay = Math.min(5_000 * Math.pow(2, this.reconnectAttempts), 120_000) // 5s → 10s → 20s → ... → 120s max
-    this.reconnectAttempts++
-    if (this.reconnectAttempts > 15) this.reconnectAttempts = 0 // reset after many failures
-
-    this.log(`Автопереподключение через ${Math.round(delay/1000)}с (попытка ${this.reconnectAttempts}, причина: ${reason})`, 'warn')
-
-    this._reconnectTimer = setTimeout(async () => {
-      this._reconnectTimer = null
-      try {
-        await this.connect()
-      } catch (err) {
-        this.log(`Реконнект ошибка: ${err.message}`, 'error')
-        if (this.sessionString) this._scheduleReconnect('reconnect_failed')
-      }
-    }, delay)
   }
 
   /**
@@ -209,11 +184,7 @@ export class TelegramSession extends EventEmitter {
         this.lastName = me.lastName || null
         this.status = 'active'
         this.connectedAt = new Date().toISOString()
-        this.reconnectAttempts = 0 // reset on success
         this.log('Аккаунт переподключён ✓')
-
-        // Setup connection drop detection
-        this._setupDisconnectHandler()
 
         await this.orchestrator.db.dbUpdateTelegramAccountStatus(this.id, 'active')
         this.orchestrator.broadcast({
@@ -806,60 +777,9 @@ export class TelegramSession extends EventEmitter {
   }
 
   /**
-   * Setup handler for connection drops.
-   * Monitors the underlying connection and auto-reconnects.
-   */
-  _setupDisconnectHandler() {
-    if (!this.client) return
-
-    // GramJS fires 'disconnected' when connection drops
-    const handler = async () => {
-      if (this.status !== 'active') return // already handling disconnect
-      this.log('Соединение потеряно', 'warn')
-      this.status = 'disconnected'
-      await this.orchestrator.db.dbUpdateTelegramAccountStatus(this.id, 'disconnected').catch(() => {})
-      this.orchestrator.broadcast({
-        type: 'tg_account_update',
-        accountId: this.id,
-        status: 'disconnected',
-      })
-
-      // Auto-reconnect if we have session string
-      if (this.sessionString) {
-        this._scheduleReconnect('connection_drop')
-      }
-    }
-
-    // Remove old handler if exists
-    if (this._disconnectHandler) {
-      this.client.removeEventListener(this._disconnectHandler)
-    }
-    this._disconnectHandler = handler
-
-    // GramJS connection state monitoring — check periodically
-    // since GramJS doesn't have a clean disconnect event
-    if (this._connectionMonitor) clearInterval(this._connectionMonitor)
-    this._connectionMonitor = setInterval(() => {
-      if (this.status === 'active' && this.client && !this.client.connected) {
-        this.log('Connection monitor: клиент отключён', 'warn')
-        clearInterval(this._connectionMonitor)
-        this._connectionMonitor = null
-        handler()
-      }
-    }, 15_000) // check every 15s
-  }
-
-  /**
    * Gracefully disconnect the account.
    */
   async disconnect() {
-    clearTimeout(this._reconnectTimer)
-    this._reconnectTimer = null
-    if (this._connectionMonitor) {
-      clearInterval(this._connectionMonitor)
-      this._connectionMonitor = null
-    }
-
     if (this.client?.connected) {
       try { await this.client.disconnect() } catch (_) {}
     }
@@ -888,7 +808,6 @@ export class TelegramSession extends EventEmitter {
       status: this.status,
       connectedAt: this.connectedAt,
       proxyString: this.proxyString ? this.proxyString.split(':')[0] + ':***' : null,
-      reconnectAttempts: this.reconnectAttempts,
     }
   }
 }

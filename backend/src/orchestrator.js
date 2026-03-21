@@ -1521,33 +1521,10 @@ export class Orchestrator {
   async _runHeartbeat() {
     const statuses = []
 
-    // ── Telegram accounts heartbeat ──
+    // ── Telegram accounts heartbeat (status only, no reconnect — GramJS handles it) ──
     for (const [id, session] of this.telegramAccounts) {
-      try {
-        if (session.status === 'active' && session.client?.connected) {
-          // Ping — try getMe as lightweight check
-          await session.client.getMe()
-          await db.dbUpdateTelegramAccountStatus(id, 'active')
-          try { await db.dbUpdateHeartbeat('tg_accounts', id) } catch (_) {}
-          statuses.push({ id, platform: 'telegram', status: 'alive' })
-        } else if (session.status === 'active' && !session.client?.connected) {
-          // Connection dropped — increment failure counter
-          let failures = 0
-          try { failures = await db.dbIncrementHeartbeatFailures('tg_accounts', id) } catch (_) {}
-          statuses.push({ id, platform: 'telegram', status: 'dead', failures })
-
-          // Auto-reconnect after 3 consecutive failures
-          if (failures >= 3 && session.sessionString) {
-            this.log(session.phone, `Heartbeat: ${failures} провалов — автопереподключение`, 'warn', 'telegram')
-            session.connect().catch(err => {
-              this.log(session.phone, `Heartbeat reconnect error: ${err.message}`, 'error', 'telegram')
-            })
-          }
-        }
-      } catch (err) {
-        try { await db.dbIncrementHeartbeatFailures('tg_accounts', id) } catch (_) {}
-        statuses.push({ id, platform: 'telegram', status: 'error', error: err.message })
-      }
+      const alive = session.status === 'active' && session.client?.connected
+      statuses.push({ id, platform: 'telegram', status: alive ? 'alive' : (session.status === 'error' ? 'error' : 'dead') })
     }
 
     // ── WhatsApp sessions heartbeat ──
