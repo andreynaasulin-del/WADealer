@@ -1,4 +1,4 @@
-import { dbGetLeads, dbImportLeadsFromTahles, dbAddManualLeads } from '../db.js'
+import { dbGetLeads, dbImportLeadsFromTahles, dbAddManualLeads, dbGetAllCampaigns } from '../db.js'
 
 export default async function leadRoutes(fastify) {
   // GET /api/leads?campaign_id=...&status=...&limit=...&offset=...
@@ -10,6 +10,15 @@ export default async function leadRoutes(fastify) {
       limit: Number(limit),
       offset: Number(offset),
     })
+    // Filter leads to only show those belonging to user's team campaigns
+    if (req.user && !req.user.is_admin && result.data) {
+      const campaigns = await dbGetAllCampaigns()
+      const teamCampaignIds = new Set(
+        campaigns.filter(c => c.team_id === req.user.team_id).map(c => c.id)
+      )
+      result.data = result.data.filter(l => teamCampaignIds.has(l.campaign_id))
+      result.count = result.data.length
+    }
     return reply.send(result)
   })
 

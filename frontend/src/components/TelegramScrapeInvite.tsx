@@ -23,7 +23,11 @@ export default function TelegramScrapeInvite({ accounts, selectedAccountId }: Pr
   const [targetChannel, setTargetChannel] = useState('')
   const [dailyLimit, setDailyLimit]       = useState(50)
   const [loading, setLoading]             = useState(false)
-  const [section, setSection]             = useState<'groups' | 'scrape' | 'invite'>('groups')
+  const [section, setSection]             = useState<'groups' | 'scrape' | 'invite' | 'smart'>('groups')
+  const [adminGroups, setAdminGroups]     = useState<Record<string, { phone: string; username: string; adminGroups: Array<{ id: string; title: string; username: string | null; participantsCount: number; isChannel: boolean; isMegagroup: boolean }> }> | null>(null)
+  const [smartStatus, setSmartStatus]     = useState<Record<string, unknown>>({ status: 'idle' })
+  const [smartLimit, setSmartLimit]       = useState(40)
+  const [loadingAdminGroups, setLoadingAdminGroups] = useState(false)
 
   const activeAccounts = accounts.filter(a => a.status === 'active')
   const accountId = selectedAccountId || activeAccounts[0]?.id
@@ -45,19 +49,25 @@ export default function TelegramScrapeInvite({ accounts, selectedAccountId }: Pr
     try { setInviteStatus(await api.telegram.invite.status()) } catch {}
   }, [])
 
+  const loadSmartStatus = useCallback(async () => {
+    try { setSmartStatus(await api.telegram.invite.smartStatus()) } catch {}
+  }, [])
+
   useEffect(() => {
     loadGroups()
     loadStats()
     loadScrapeStatus()
     loadInviteStatus()
+    loadSmartStatus()
     const t = setInterval(() => {
       loadGroups()
       loadStats()
       loadScrapeStatus()
       loadInviteStatus()
+      loadSmartStatus()
     }, 5000)
     return () => clearInterval(t)
-  }, [loadGroups, loadStats, loadScrapeStatus, loadInviteStatus])
+  }, [loadGroups, loadStats, loadScrapeStatus, loadInviteStatus, loadSmartStatus])
 
   // ── Actions ─────────────────────────────────────────────────────────────────
   const addGroups = async () => {
@@ -113,6 +123,30 @@ export default function TelegramScrapeInvite({ accounts, selectedAccountId }: Pr
     await loadInviteStatus()
   }
 
+  const loadAdminGroups = async () => {
+    setLoadingAdminGroups(true)
+    try {
+      setAdminGroups(await api.telegram.adminGroups())
+    } catch (e: unknown) {
+      alert((e as Error).message)
+    }
+    setLoadingAdminGroups(false)
+  }
+
+  const startSmartInvite = async () => {
+    try {
+      await api.telegram.invite.smartStart(smartLimit)
+      await loadSmartStatus()
+    } catch (e: unknown) {
+      alert((e as Error).message)
+    }
+  }
+
+  const stopSmartInvite = async () => {
+    await api.telegram.invite.smartStop()
+    await loadSmartStatus()
+  }
+
   // ── Status badges ───────────────────────────────────────────────────────────
   const statusColor = (s: string) => {
     switch (s) {
@@ -129,17 +163,17 @@ export default function TelegramScrapeInvite({ accounts, selectedAccountId }: Pr
       <div className="flex items-center justify-between mb-3">
         <h2 className="text-sm font-bold text-blue-400 tracking-wider">▸ ПАРСИНГ & ИНВАЙТ</h2>
         <div className="flex gap-1 text-xs">
-          {(['groups', 'scrape', 'invite'] as const).map(tab => (
+          {(['groups', 'scrape', 'invite', 'smart'] as const).map(tab => (
             <button
               key={tab}
-              onClick={() => setSection(tab)}
+              onClick={() => { setSection(tab); if (tab === 'smart' && !adminGroups) loadAdminGroups() }}
               className={`px-2 py-0.5 rounded cursor-pointer transition-colors ${
                 section === tab
                   ? 'bg-blue-500/20 text-blue-400'
                   : 'text-zinc-500 hover:text-zinc-300'
               }`}
             >
-              {tab === 'groups' ? 'Группы' : tab === 'scrape' ? 'Парсинг' : 'Инвайт'}
+              {tab === 'groups' ? 'Группы' : tab === 'scrape' ? 'Парсинг' : tab === 'invite' ? 'Инвайт' : 'Smart'}
             </button>
           ))}
         </div>
@@ -338,6 +372,96 @@ export default function TelegramScrapeInvite({ accounts, selectedAccountId }: Pr
 
           <p className="text-xs text-zinc-600 mt-2">
             ~50 инвайтов/день на аккаунт. При PeerFlood автостоп.
+          </p>
+        </div>
+      )}
+
+      {/* ── Section D: Smart Invite ────────────────────────────────────────── */}
+      {section === 'smart' && (
+        <div>
+          {/* Controls */}
+          <div className="flex items-center gap-2 mb-3">
+            <button
+              onClick={loadAdminGroups}
+              disabled={loadingAdminGroups}
+              className="bg-blue-600 hover:bg-blue-500 disabled:bg-zinc-700 disabled:text-zinc-500 px-3 py-1 rounded text-xs cursor-pointer transition-colors"
+            >
+              {loadingAdminGroups ? 'Сканирую...' : 'Сканировать админ-группы'}
+            </button>
+            <input
+              type="number"
+              value={smartLimit}
+              onChange={e => setSmartLimit(parseInt(e.target.value) || 40)}
+              className="w-16 bg-zinc-900 border border-zinc-700 rounded px-2 py-1 text-xs text-zinc-300 text-center focus:outline-none focus:border-blue-500"
+              title="Лимит/аккаунт/день"
+            />
+          </div>
+
+          {/* Admin groups list */}
+          {adminGroups && (
+            <div className="max-h-48 overflow-y-auto mb-3">
+              {Object.entries(adminGroups).map(([accId, info]) => (
+                <div key={accId} className="mb-2">
+                  <div className="text-xs font-bold text-zinc-400">
+                    @{info.username || info.phone}
+                    <span className="text-zinc-600 font-normal ml-1">
+                      ({info.adminGroups.length} групп)
+                    </span>
+                  </div>
+                  {info.adminGroups.length > 0 ? (
+                    <div className="ml-3">
+                      {info.adminGroups.map(g => (
+                        <div key={g.id} className="text-xs text-zinc-500">
+                          {g.isMegagroup ? '👥' : g.isChannel ? '📢' : '💬'}{' '}
+                          <span className="text-zinc-300">{g.title}</span>
+                          {g.username && <span className="text-zinc-600 ml-1">@{g.username}</span>}
+                          <span className="text-zinc-600 ml-1">({g.participantsCount})</span>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="ml-3 text-xs text-zinc-600">нет админских групп</div>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* Smart invite status & controls */}
+          {(smartStatus as { status: string }).status === 'running' ? (
+            <div>
+              <div className="text-xs text-zinc-400 mb-2">
+                Приглашено: <span className="text-green-400 font-bold">{(smartStatus as Record<string, number>).invited || 0}</span>
+                {' | '}Ошибок: <span className="text-red-400">{(smartStatus as Record<string, number>).failed || 0}</span>
+                {' | '}Пропущено: <span className="text-zinc-400">{(smartStatus as Record<string, number>).skipped || 0}</span>
+                {' | '}Аккаунтов: <span className="text-blue-400">{(smartStatus as Record<string, number>).accounts || 0}</span>
+              </div>
+              <button
+                onClick={stopSmartInvite}
+                className="bg-red-600/20 text-red-400 hover:bg-red-600/30 px-3 py-1 rounded text-xs cursor-pointer"
+              >
+                ■ Стоп Smart Invite
+              </button>
+            </div>
+          ) : (
+            <div>
+              <button
+                onClick={startSmartInvite}
+                disabled={!adminGroups || Object.values(adminGroups).every(a => a.adminGroups.length === 0) || !stats?.pending}
+                className="bg-green-600 hover:bg-green-500 disabled:bg-zinc-700 disabled:text-zinc-500 px-3 py-1 rounded text-xs cursor-pointer transition-colors"
+              >
+                ▶ Smart Invite ({stats?.pending || 0} pending)
+              </button>
+              {(smartStatus as { status: string }).status === 'completed' && (
+                <span className="text-xs text-green-400 ml-2">
+                  Завершено! Приглашено: {(smartStatus as Record<string, number>).invited}
+                </span>
+              )}
+            </div>
+          )}
+
+          <p className="text-xs text-zinc-600 mt-2">
+            Каждый аккаунт инвайтит в свои админ-группы параллельно. До {smartLimit} инвайтов/аккаунт/день.
           </p>
         </div>
       )}

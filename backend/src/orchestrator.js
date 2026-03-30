@@ -9,6 +9,7 @@ import { encryptCompact, decryptCompact } from './crypto.js'
 import { WarmupManager } from './warmup.js'
 import { scrapeWorkingGirls } from './girls-scraper.js'
 import { GirlsDmEngine } from './girls-dm.js'
+import { WaFarmer } from './wa-farmer.js'
 import * as db from './db.js'
 
 /**
@@ -56,6 +57,9 @@ export class Orchestrator {
 
     /** Girls DM engine */
     this.girlsDm = new GirlsDmEngine(this)
+
+    /** WA Farmer — account warmup & health monitoring */
+    this.farmer = new WaFarmer(this)
 
     /** Per-phone reply lock — prevents concurrent AI replies to same contact */
     this._replyInProgress = new Set()
@@ -200,21 +204,21 @@ export class Orchestrator {
   // WhatsApp Session management (unchanged)
   // ══════════════════════════════════════════════════════════════════════════
 
-  async createSession(phone, proxyString) {
+  async createSession(phone, proxyString, { skipFroxy = false } = {}) {
     if (this.sessions.has(phone)) {
       throw new Error(`Сессия ${phone} уже существует`)
     }
-    if (!proxyString) {
+    if (!proxyString && !skipFroxy) {
       const port = this.getNextFroxyPort()
       proxyString = this.buildFroxyProxy(port)
       this.log(phone, `Froxy порт ${port} назначен (уникальный IP)`)
     }
-    const proxyPort = proxyString.split(':')[1]
-    const dbRow = await db.dbUpsertSession({ phone_number: phone, proxy_string: proxyString, status: 'offline' })
-    const session = new Session(phone, proxyString, this)
+    const proxyPort = proxyString ? proxyString.split(':')[1] : null
+    const dbRow = await db.dbUpsertSession({ phone_number: phone, proxy_string: proxyString || '', status: 'offline' })
+    const session = new Session(phone, proxyString || '', this)
     session.id = dbRow.id
     this.sessions.set(phone, session)
-    this.log(phone, `Сессия добавлена → порт ${proxyPort} — нажми Подключить`)
+    this.log(phone, proxyPort ? `Сессия добавлена → порт ${proxyPort} — нажми Подключить` : `Сессия добавлена (без прокси) — нажми Подключить`)
     this.broadcast({ type: 'session_created', phone })
     return { id: dbRow.id, phone, status: 'offline', proxyPort }
   }
@@ -254,6 +258,7 @@ export class Orchestrator {
       id: s.id, phone: s.phone, status: s.status,
       qrCode: s.qrCode, proxyPort: s.proxyString.split(':')[1] || null,
       connectedAt: s.connectedAt,
+      user_id: s.userId || null,
     }))
   }
 
@@ -863,6 +868,7 @@ export class Orchestrator {
         if (s.status === 'banned') continue
         const session = new Session(s.phone_number, s.proxy_string, this)
         session.id = s.id
+        session.userId = s.user_id || null
         this.sessions.set(s.phone_number, session)
 
         // ── Auto-start logic ──────────────────────────────────────────────
@@ -1021,6 +1027,7 @@ export class Orchestrator {
             id: lead.id, phone: lead.phone, campaignId: campaign.id,
             template: campaign.template_text, sessionPhone,
             delayMinSec: campaign.delay_min_sec, delayMaxSec: campaign.delay_max_sec,
+            teamId: campaign.team_id,
           })
         }
 
@@ -1066,6 +1073,7 @@ export class Orchestrator {
         id: lead.id, phone: lead.phone, campaignId,
         template: campaign.template_text, sessionPhone,
         delayMinSec: campaign.delay_min_sec, delayMaxSec: campaign.delay_max_sec,
+        teamId: campaign.team_id,
       })
     }
 
@@ -1101,7 +1109,7 @@ export class Orchestrator {
    * Create a new Telegram account entry — persist to DB, create in-memory session.
    * Does NOT start auth — user must call requestCode separately.
    */
-  async createTelegramAccount(phone) {
+  async createTelegramAccount(phone, userId = null) {
     // Check for duplicate phones
     for (const acc of this.telegramAccounts.values()) {
       if (acc.phone === phone) {
@@ -1110,10 +1118,11 @@ export class Orchestrator {
     }
 
     // Persist to DB
-    const dbRow = await db.dbCreateTelegramAccount(phone)
+    const dbRow = await db.dbCreateTelegramAccount(phone, userId)
 
     // Create in-memory session
     const session = new TelegramSession(dbRow.id, phone, this)
+    session.userId = userId
     this.telegramAccounts.set(dbRow.id, session)
 
     this.log(phone, `Аккаунт добавлен — запросите код`, 'info', 'telegram')
@@ -1220,13 +1229,14 @@ export class Orchestrator {
           session.firstName = a.first_name
           session.lastName = a.last_name
         }
+        session.userId = a.user_id || null
         this.telegramAccounts.set(a.id, session)
         restored++
 
         // Auto-reconnect accounts that were active and have session string
         if (a.status === 'active' && a.session_string) {
-          // Stagger reconnects with big delay to avoid AUTH_KEY_DUPLICATED
-          const delay = autoStarted * (8000 + Math.floor(Math.random() * 7000)) + 5000
+          // Stagger reconnects — 15-25 sec apart to avoid AUTH_KEY_DUPLICATED with 19 accounts
+          const delay = autoStarted * (15000 + Math.floor(Math.random() * 10000)) + 10000
           setTimeout(() => {
             session.connect().catch(err => {
               this.log(a.phone, `Ошибка автоподключения: ${err.message}`, 'error', 'telegram')
@@ -1238,6 +1248,21 @@ export class Orchestrator {
 
       if (restored > 0) {
         this.log(null, `Загружено ${restored} TG-аккаунтов (${autoStarted} переподключаются)`, 'system', 'telegram')
+
+        // Auto-start DM campaign 3 min after boot (wait for accounts to reconnect)
+        setTimeout(() => {
+          if (!this.girlsDm._running) {
+            this.log(null, '📨 Авто-запуск DM кампании после рестарта', 'system', 'telegram')
+            this.girlsDm.start().catch(e => this.log(null, `📨 Авто-запуск ошибка: ${e.message}`, 'warn'))
+          }
+        }, 3 * 60_000)
+
+        // Auto-start WA Farmer 2 min after boot
+        setTimeout(() => {
+          if (!this.farmer._running) {
+            this.farmer.start()
+          }
+        }, 2 * 60_000)
       }
     } catch (err) {
       // Silently skip if tables don't exist yet
@@ -1898,6 +1923,229 @@ export class Orchestrator {
 
   stopMultiInvite() {
     if (this._multiInviteJob) this._multiInviteJob.status = 'stopped'
+  }
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // Smart Invite — auto-detect admin groups per account
+  // ══════════════════════════════════════════════════════════════════════════
+
+  /**
+   * Detect admin groups for all active TG accounts.
+   * Returns { accountId: { phone, username, adminGroups: [...] } }
+   */
+  async detectAdminGroups() {
+    const activeAccounts = Array.from(this.telegramAccounts.values()).filter(a => a.status === 'active')
+    if (activeAccounts.length === 0) throw new Error('Нет активных TG аккаунтов')
+
+    const result = {}
+    for (const session of activeAccounts) {
+      try {
+        const groups = await session.getAdminGroups()
+        result[session.id] = {
+          phone: session.phone,
+          username: session.username,
+          adminGroups: groups,
+        }
+        this.log(session.phone, `Найдено ${groups.length} админских групп`, 'info', 'telegram')
+      } catch (err) {
+        this.log(session.phone, `Ошибка получения админ-групп: ${err.message}`, 'error', 'telegram')
+        result[session.id] = { phone: session.phone, username: session.username, adminGroups: [] }
+      }
+    }
+
+    this._adminGroupsCache = result
+    return result
+  }
+
+  /**
+   * Smart invite: each account invites scraped members to its own admin groups.
+   * All accounts work in parallel.
+   */
+  async startSmartInvite(dailyLimitPerAccount = 40) {
+    // Step 1: detect admin groups
+    const adminMap = await this.detectAdminGroups()
+
+    // Filter accounts that actually have admin groups (переходники)
+    const accountsWithGroups = Object.entries(adminMap)
+      .filter(([, info]) => info.adminGroups.length > 0)
+      .map(([accountId, info]) => ({
+        accountId,
+        session: this.telegramAccounts.get(accountId),
+        phone: info.phone,
+        adminGroups: info.adminGroups,
+      }))
+
+    if (accountsWithGroups.length === 0) throw new Error('Ни у одного аккаунта нет админских групп')
+
+    const totalGroups = accountsWithGroups.reduce((sum, a) => sum + a.adminGroups.length, 0)
+    this.log(null, `Smart invite: ${accountsWithGroups.length} аккаунтов с ${totalGroups} админскими группами`, 'info', 'telegram')
+
+    // Get pending members
+    const maxMembers = accountsWithGroups.length * dailyLimitPerAccount
+    const pendingMembers = await db.dbGetPendingScrapedMembers(maxMembers)
+    if (pendingMembers.length === 0) throw new Error('Нет pending участников для инвайта')
+
+    // Distribute members across accounts evenly
+    const memberChunks = {}
+    let idx = 0
+    for (const member of pendingMembers) {
+      const acc = accountsWithGroups[idx % accountsWithGroups.length]
+      if (!memberChunks[acc.accountId]) memberChunks[acc.accountId] = []
+      memberChunks[acc.accountId].push(member)
+      idx++
+    }
+
+    this._smartInviteJob = {
+      status: 'running',
+      accounts: accountsWithGroups.length,
+      invited: 0,
+      failed: 0,
+      skipped: 0,
+      perAccount: {},
+    }
+
+    this.broadcast({
+      type: 'tg_smart_invite_start',
+      accounts: accountsWithGroups.length,
+      totalGroups,
+      pending: pendingMembers.length,
+    })
+
+    // Step 2: launch parallel workers
+    const workerPromises = accountsWithGroups.map(acc =>
+      this._smartInviteWorker(acc, memberChunks[acc.accountId] || [], dailyLimitPerAccount)
+    )
+
+    await Promise.allSettled(workerPromises)
+
+    this._smartInviteJob.status = 'completed'
+    this.broadcast({
+      type: 'tg_smart_invite_complete',
+      invited: this._smartInviteJob.invited,
+      failed: this._smartInviteJob.failed,
+      skipped: this._smartInviteJob.skipped,
+      perAccount: this._smartInviteJob.perAccount,
+    })
+
+    return {
+      invited: this._smartInviteJob.invited,
+      failed: this._smartInviteJob.failed,
+      skipped: this._smartInviteJob.skipped,
+      perAccount: this._smartInviteJob.perAccount,
+    }
+  }
+
+  /** Worker for a single account in smart invite */
+  async _smartInviteWorker(acc, members, dailyLimit) {
+    const { session, phone, adminGroups, accountId } = acc
+    let invited = 0
+    let failed = 0
+    let skipped = 0
+    let consecutiveErrors = 0
+
+    this._smartInviteJob.perAccount[accountId] = {
+      phone,
+      groups: adminGroups.map(g => g.title),
+      invited: 0,
+      failed: 0,
+      skipped: 0,
+      status: 'running',
+    }
+
+    for (const member of members) {
+      if (this._smartInviteJob?.status !== 'running') break
+      if (invited >= dailyLimit) break
+
+      // Round-robin across this account's admin groups
+      const group = adminGroups[invited % adminGroups.length]
+      const target = group.username || group.id
+
+      try {
+        const result = await session.inviteToChannel(target, {
+          userId: member.user_id,
+          accessHash: member.access_hash,
+          username: member.username,
+          firstName: member.first_name,
+        })
+
+        if (result.rateLimited) {
+          await db.dbUpdateMemberInviteStatus(member.id, 'failed', 'PEER_FLOOD')
+          this.log(phone, `PeerFlood — стоп для этого аккаунта. Приглашено: ${invited}`, 'warn', 'telegram')
+          this._smartInviteJob.perAccount[accountId].status = 'rate_limited'
+          break
+        }
+
+        if (result.success) {
+          await db.dbUpdateMemberInviteStatus(member.id, 'invited')
+          invited++
+          consecutiveErrors = 0
+          this.log(phone, `Приглашён ${member.username || member.user_id} → ${group.title} [${invited}/${dailyLimit}]`, 'info', 'telegram')
+        } else {
+          const isPrivacy = ['USER_PRIVACY_RESTRICTED', 'USER_NOT_MUTUAL_CONTACT', 'USER_CHANNELS_TOO_MUCH', 'USER_KICKED'].includes(result.error)
+          await db.dbUpdateMemberInviteStatus(member.id, isPrivacy ? 'skipped' : 'failed', result.error)
+          if (isPrivacy) {
+            skipped++
+            consecutiveErrors = 0
+          } else {
+            failed++
+            consecutiveErrors++
+          }
+          if (consecutiveErrors >= 5) {
+            this.log(phone, `5 ошибок подряд — стоп для защиты аккаунта`, 'error', 'telegram')
+            this._smartInviteJob.perAccount[accountId].status = 'error_limit'
+            break
+          }
+        }
+      } catch (err) {
+        await db.dbUpdateMemberInviteStatus(member.id, 'failed', err.message)
+        failed++
+        consecutiveErrors++
+        if (consecutiveErrors >= 5) break
+      }
+
+      // Update global + per-account stats
+      this._smartInviteJob.invited = Object.values(this._smartInviteJob.perAccount).reduce((s, a) => s + a.invited, 0) + invited
+      this._smartInviteJob.failed = Object.values(this._smartInviteJob.perAccount).reduce((s, a) => s + a.failed, 0) + failed
+      this._smartInviteJob.skipped = Object.values(this._smartInviteJob.perAccount).reduce((s, a) => s + a.skipped, 0) + skipped
+
+      this.broadcast({
+        type: 'tg_smart_invite_progress',
+        invited: this._smartInviteJob.invited,
+        failed: this._smartInviteJob.failed,
+        skipped: this._smartInviteJob.skipped,
+      })
+
+      // Human-like delay: 30-90s
+      if (this._smartInviteJob?.status === 'running') {
+        const delay = 30000 + Math.random() * 60000
+        await new Promise(r => setTimeout(r, delay))
+      }
+
+      // Extra break every 5 invites: 3-5 min
+      if (invited > 0 && invited % 5 === 0 && this._smartInviteJob?.status === 'running') {
+        const breakTime = 180000 + Math.random() * 120000
+        this.log(phone, `Перерыв ${Math.round(breakTime / 1000)}с после ${invited} инвайтов...`, 'info', 'telegram')
+        await new Promise(r => setTimeout(r, breakTime))
+      }
+    }
+
+    // Finalize per-account stats
+    this._smartInviteJob.perAccount[accountId].invited = invited
+    this._smartInviteJob.perAccount[accountId].failed = failed
+    this._smartInviteJob.perAccount[accountId].skipped = skipped
+    if (this._smartInviteJob.perAccount[accountId].status === 'running') {
+      this._smartInviteJob.perAccount[accountId].status = 'completed'
+    }
+
+    this.log(phone, `Smart invite завершён: ${invited} приглашено, ${failed} ошибок, ${skipped} пропущено`, 'info', 'telegram')
+  }
+
+  stopSmartInvite() {
+    if (this._smartInviteJob) this._smartInviteJob.status = 'stopped'
+  }
+
+  getSmartInviteStatus() {
+    return this._smartInviteJob || { status: 'idle' }
   }
 
   // ══════════════════════════════════════════════════════════════════════════

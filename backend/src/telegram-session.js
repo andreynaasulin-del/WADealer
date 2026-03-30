@@ -1,8 +1,10 @@
 import { TelegramClient, Api } from 'telegram'
 import { StringSession } from 'telegram/sessions/index.js'
 import { computeCheck } from 'telegram/Password.js'
+import { NewMessage } from 'telegram/events/index.js'
 import { EventEmitter } from 'events'
 import QRCode from 'qrcode'
+import { forwardToOperatorGroup } from './wadealer-bot.js'
 
 // Lazy-read env vars (ESM hoists imports before dotenv/config runs)
 function getApiId() { return parseInt(process.env.TG_API_ID || '0') }
@@ -186,6 +188,9 @@ export class TelegramSession extends EventEmitter {
         this.connectedAt = new Date().toISOString()
         this.log('Аккаунт переподключён ✓')
 
+        // Setup DM forwarding to operator group
+        this._setupDmForwarding()
+
         await this.orchestrator.db.dbUpdateTelegramAccountStatus(this.id, 'active')
         this.orchestrator.broadcast({
           type: 'tg_account_update',
@@ -196,11 +201,19 @@ export class TelegramSession extends EventEmitter {
         })
         return { status: 'active' }
       } catch (err) {
-        // Session expired — need to re-auth
-        this.sessionString = ''
-        this.status = 'error'
         const msg = err.message || 'Session expired'
-        this.log(`Сессия истекла: ${msg}`, 'error')
+        const isRealExpiry = msg.includes('SESSION_REVOKED') || msg.includes('USER_DEACTIVATED') || msg.includes('AUTH_KEY_UNREGISTERED')
+
+        if (isRealExpiry) {
+          // Only clear session for REAL expiry/ban, not temporary errors
+          this.sessionString = ''
+          this.log(`Сессия УДАЛЕНА (${msg})`, 'error')
+        } else {
+          // Keep session_string for retry — temporary error (network, flood, etc)
+          this.log(`Ошибка reconnect (сессия сохранена для ретрая): ${msg}`, 'warn')
+        }
+
+        this.status = 'error'
         await this.orchestrator.db.dbUpdateTelegramAccountStatus(this.id, 'error', msg)
         this.orchestrator.broadcast({
           type: 'tg_account_update',
@@ -425,6 +438,9 @@ export class TelegramSession extends EventEmitter {
 
     this.log(`Аккаунт ${this.username ? '@' + this.username : this.phone} подключён ✓`)
 
+    // Setup DM forwarding to operator group
+    this._setupDmForwarding()
+
     // Save session string + user info to DB
     await this.orchestrator.db.dbUpdateTelegramAccountStatus(this.id, 'active')
     await this.orchestrator.db.dbUpdateTelegramAccountInfo(
@@ -464,6 +480,66 @@ export class TelegramSession extends EventEmitter {
 
     await this.client.sendMessage(entity, { message: text })
     this.log(`Сообщение отправлено → ${chatId}`)
+  }
+
+  /**
+   * Get all groups/supergroups where this account is admin/creator.
+   */
+  async getAdminGroups() {
+    if (this.status !== 'active' || !this.client) throw new Error('Аккаунт не активен')
+
+    const dialogs = await this.client.getDialogs({ limit: 200 })
+    const adminGroups = []
+
+    for (const d of dialogs) {
+      if (!d.isGroup && !d.entity?.megagroup) continue
+      // Check if we're admin
+      try {
+        const entity = d.entity
+        if (!entity) continue
+        // For supergroups/megagroups
+        if (entity.adminRights || entity.creator) {
+          adminGroups.push({
+            id: d.id,
+            title: d.title || d.name || 'Unknown',
+            participantsCount: entity.participantsCount || 0,
+            username: entity.username || null,
+          })
+        }
+      } catch {}
+    }
+
+    this.log(`Найдено ${adminGroups.length} админских групп`)
+    return adminGroups
+  }
+
+  /**
+   * Invite a user to a group by user_id.
+   * @param {number|string} groupId — group/supergroup ID
+   * @param {number} userId — numeric TG user ID
+   * @param {string} accessHash — user's access_hash from tg_girls table
+   */
+  async inviteToGroup(groupId, userId, accessHash) {
+    if (this.status !== 'active' || !this.client) throw new Error('Аккаунт не активен')
+
+    let entity = groupId
+    if (typeof groupId === 'string' && /^-?\d+$/.test(groupId)) {
+      entity = parseInt(groupId)
+    }
+
+    // Build InputUser with access_hash for users we haven't interacted with
+    const inputUser = accessHash
+      ? new Api.InputUser({ userId: BigInt(userId), accessHash: BigInt(accessHash) })
+      : BigInt(userId)
+
+    await this.client.invoke(
+      new Api.channels.InviteToChannel({
+        channel: entity,
+        users: [inputUser],
+      })
+    )
+
+    this.log(`Инвайт: ${userId} → группу ${groupId} ✓`)
   }
 
   /**
@@ -777,9 +853,55 @@ export class TelegramSession extends EventEmitter {
   }
 
   /**
+   * Get all groups/channels where this account is an admin.
+   * @returns {Array<{ id, title, username, participantsCount, isChannel, isMegagroup }>}
+   */
+  async getAdminGroups() {
+    if (this.status !== 'active' || !this.client) throw new Error('Аккаунт не активен')
+
+    this.log('Получаю список админских групп...')
+    const adminGroups = []
+
+    const dialogs = await this.client.getDialogs({ limit: 500 })
+
+    for (const dialog of dialogs) {
+      const entity = dialog.entity
+      if (!entity) continue
+
+      // Channel or Megagroup with admin rights
+      if (entity.className === 'Channel' && entity.adminRights) {
+        adminGroups.push({
+          id: entity.id.toString(),
+          title: entity.title,
+          username: entity.username || null,
+          participantsCount: entity.participantsCount || 0,
+          isChannel: !entity.megagroup,
+          isMegagroup: !!entity.megagroup,
+        })
+      }
+
+      // Regular Chat (small group) where we are admin
+      if (entity.className === 'Chat' && entity.adminRights) {
+        adminGroups.push({
+          id: entity.id.toString(),
+          title: entity.title,
+          username: null,
+          participantsCount: entity.participantsCount || 0,
+          isChannel: false,
+          isMegagroup: false,
+        })
+      }
+    }
+
+    this.log(`Найдено ${adminGroups.length} админских групп`)
+    return adminGroups
+  }
+
+  /**
    * Gracefully disconnect the account.
    */
   async disconnect() {
+    this._removeDmForwarding()
     if (this.client?.connected) {
       try { await this.client.disconnect() } catch (_) {}
     }
@@ -798,6 +920,88 @@ export class TelegramSession extends EventEmitter {
   /**
    * Get account state for API response.
    */
+  // ── Forward incoming DMs to operator TG group ──────────────────────────────
+  _setupDmForwarding() {
+    if (!this.client || this._dmHandler) return
+
+    this._dmHandler = async (event) => {
+      try {
+        const msg = event.message
+        if (!msg || msg.out) return       // skip outgoing
+        if (!msg.isPrivate) return        // only private DMs
+
+        const senderId = msg.senderId ? Number(msg.senderId) : null
+        if (!senderId) return
+
+        // Get sender info
+        let senderName = ''
+        let senderUsername = ''
+        try {
+          const sender = await msg.getSender()
+          if (sender) {
+            senderName = [sender.firstName, sender.lastName].filter(Boolean).join(' ')
+            senderUsername = sender.username || ''
+          }
+        } catch {}
+
+        const displayFrom = senderUsername ? `@${senderUsername}` : `${senderId}`
+        const text = msg.text || ''
+
+        // Check for media
+        let mediaBuffer = null
+        let mediaType = null
+        let mediaMime = null
+        let mediaCaption = ''
+
+        if (msg.photo || msg.video || msg.document || msg.voice || msg.audio || msg.sticker) {
+          try {
+            mediaBuffer = await this.client.downloadMedia(msg)
+            if (msg.photo) { mediaType = 'photo'; mediaMime = 'image/jpeg' }
+            else if (msg.video) { mediaType = 'video'; mediaMime = 'video/mp4' }
+            else if (msg.voice || msg.audio) { mediaType = 'audio'; mediaMime = 'audio/ogg' }
+            else if (msg.sticker) { mediaType = 'sticker'; mediaMime = 'image/webp' }
+            else if (msg.document) { mediaType = 'document'; mediaMime = msg.document?.mimeType || 'application/octet-stream' }
+            mediaCaption = msg.message || ''
+          } catch (e) {
+            this.log(`Ошибка загрузки медиа: ${e.message}`, 'warn')
+          }
+        }
+
+        const msgText = mediaBuffer
+          ? (mediaCaption ? `[media:${mediaType}]\n${mediaCaption}` : `[media:${mediaType}]`)
+          : text
+
+        if (!msgText && !mediaBuffer) return  // skip empty
+
+        this.log(`📨 DM от ${displayFrom}: ${(text || `[${mediaType}]`).slice(0, 50)}`)
+
+        forwardToOperatorGroup({
+          from: displayFrom,
+          name: senderName || displayFrom,
+          message: msgText,
+          channel: 'telegram',
+          sessionPhone: this.id,    // TG account ID for routing replies
+          contactId: String(senderId),    // numeric user ID for sending back
+          mediaBuffer,
+          mediaType,
+          mediaMime,
+        })
+      } catch (err) {
+        this.log(`DM forward error: ${err.message}`, 'warn')
+      }
+    }
+
+    this.client.addEventHandler(this._dmHandler, new NewMessage({ incoming: true }))
+    this.log('📨 DM forwarding → operator group активен')
+  }
+
+  _removeDmForwarding() {
+    if (this._dmHandler && this.client) {
+      try { this.client.removeEventHandler(this._dmHandler, new NewMessage({ incoming: true })) } catch {}
+      this._dmHandler = null
+    }
+  }
+
   getState() {
     return {
       id: this.id,
@@ -808,6 +1012,7 @@ export class TelegramSession extends EventEmitter {
       status: this.status,
       connectedAt: this.connectedAt,
       proxyString: this.proxyString ? this.proxyString.split(':')[0] + ':***' : null,
+      user_id: this.userId || null,
     }
   }
 }

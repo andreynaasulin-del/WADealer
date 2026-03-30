@@ -6,7 +6,16 @@ export default async function crmRoutes(fastify) {
   fastify.get('/api/crm/conversations', async (req) => {
     const sessionPhone = req.query.session_phone || null
     const campaignId = req.query.campaign_id || null
-    return dbGetConversations(sessionPhone, campaignId)
+    let conversations = await dbGetConversations(sessionPhone, campaignId)
+    // Filter by team's sessions if not admin
+    if (req.user && !req.user.is_admin) {
+      const allSessions = orchestrator.getAllSessionStates()
+      const teamPhones = new Set(
+        allSessions.filter(s => s.user_id === req.user.id).map(s => s.phone)
+      )
+      conversations = conversations.filter(c => teamPhones.has(c.session_phone))
+    }
+    return conversations
   })
 
   // ── Get messages for a conversation ───────────────────────────────────────
@@ -26,10 +35,14 @@ export default async function crmRoutes(fastify) {
       return reply.code(400).send({ error: 'Текст сообщения обязателен' })
     }
 
-    // Find an online session to send through
+    // Find an online session to send through (filtered by user)
     let sessionPhone = session_phone
     if (!sessionPhone) {
-      const onlineSession = orchestrator.getAllSessionStates().find(s => s.status === 'online')
+      let sessions = orchestrator.getAllSessionStates().filter(s => s.status === 'online')
+      if (req.user && !req.user.is_admin) {
+        sessions = sessions.filter(s => s.user_id === req.user.id)
+      }
+      const onlineSession = sessions[0]
       if (!onlineSession) {
         return reply.code(400).send({ error: 'Нет онлайн-сессий для отправки' })
       }

@@ -1,9 +1,12 @@
 import { orchestrator } from '../orchestrator.js'
 
 export default async function sessionRoutes(fastify) {
-  // GET /api/sessions — list all sessions with live status
-  fastify.get('/api/sessions', async (_req, reply) => {
-    const live = orchestrator.getAllSessionStates()
+  // GET /api/sessions — list sessions (filtered by user)
+  fastify.get('/api/sessions', async (req, reply) => {
+    let live = orchestrator.getAllSessionStates()
+    if (req.user && !req.user.is_admin) {
+      live = live.filter(s => s.user_id === req.user.id)
+    }
     return reply.send(live)
   })
 
@@ -22,7 +25,19 @@ export default async function sessionRoutes(fastify) {
     },
   }, async (req, reply) => {
     const { phone, proxy } = req.body
-    const result = await orchestrator.createSession(phone, proxy || null)
+
+    // ── Tier limits ──
+    if (req.user && !req.user.is_admin && req.user.team_id) {
+      const { dbCountUserSessions } = await import('../db.js')
+      const counts = await dbCountUserSessions(req.user.team_id)
+      const limits = { start: 2, pro: 10, enterprise: 999 }
+      const maxWa = limits[req.user.tier] || 2
+      if (counts.wa >= maxWa) {
+        return reply.code(403).send({ error: `Лимит WA сессий: ${maxWa}. Текущих: ${counts.wa}. Обновите тариф.` })
+      }
+    }
+
+    const result = await orchestrator.createSession(phone, proxy || null, req.user?.id, req.user?.team_id)
     return reply.code(201).send(result)
   })
 

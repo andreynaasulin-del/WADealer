@@ -9,12 +9,26 @@
 import { Api } from 'telegram'
 import { NewMessage } from 'telegram/events/index.js'
 
-const MAX_DMS_PER_ACCOUNT_PER_DAY = 25
-const DM_DELAY_MIN = 3 * 60_000   // 3 min
-const DM_DELAY_MAX = 8 * 60_000   // 8 min
+// ── Warmup schedule: gradual increase of DMs per day ──────────────────────
+// Current: 3 DMs per account, 1 hour delay
+const WARMUP_SCHEDULE = [
+  { days: 3, limit: 7,  delayMin: 20 * 60_000, delayMax: 25 * 60_000 },  // days 1-3: 7 DMs, 20-25 min
+  { days: 7, limit: 10, delayMin: 15 * 60_000, delayMax: 20 * 60_000 },  // days 4-7
+  { days: 14, limit: 15, delayMin: 10 * 60_000, delayMax: 18 * 60_000 }, // days 8-14
+  { days: Infinity, limit: 25, delayMin: 8 * 60_000, delayMax: 15 * 60_000 }, // day 15+
+]
 
-// Auto-reply when a girl responds
-const AUTO_REPLY_HE = `תודה שענית! 🤍\nהנה הקישור לפרסום החינמי שלך — פשוט לחצי על START ומלאי את השאלון הקצר:\nhttps://t.me/Tahlesbot?start=publish\n\nThank you for responding! 🤍\nHere's your free listing link — just tap START and fill out the short form:\nhttps://t.me/Tahlesbot?start=publish`
+function getWarmupConfig(dmStartDate) {
+  if (!dmStartDate) return WARMUP_SCHEDULE[0] // no history = day 1
+  const daysSinceStart = Math.floor((Date.now() - new Date(dmStartDate).getTime()) / 86400000)
+  for (const tier of WARMUP_SCHEDULE) {
+    if (daysSinceStart < tier.days) return tier
+  }
+  return WARMUP_SCHEDULE[WARMUP_SCHEDULE.length - 1]
+}
+
+// Auto-reply when a girl responds POSITIVELY
+const AUTO_REPLY_HE = `מעולה! 🤍\nהנה הקישור לפרסום החינמי שלך באתר — פשוט לחצי על "Add Profile" ומלאי את הטופס הקצר:\nhttps://tahles.top\n\nGreat! 🤍\nHere's your free listing link — just click "Add Profile" and fill out the short form:\nhttps://tahles.top`
 
 // Message templates — bilingual Hebrew + English
 const MESSAGES = [
@@ -47,6 +61,7 @@ export class GirlsDmEngine {
     this._floodedAccounts = new Set() // accounts hit PEER_FLOOD today
     this._replyHandlers = new Map() // accountId → handler (for cleanup)
     this._repliedUsers = new Set() // user IDs already auto-replied to (avoid spam)
+    this._dmStartDates = new Map() // accountId → first DM date (for warmup)
   }
 
   get isRunning() { return this._running }
@@ -57,7 +72,39 @@ export class GirlsDmEngine {
     this._dayStart = new Date().toDateString()
     this._dailySent.clear()
     this._floodedAccounts.clear()
-    this.orchestrator.log(null, '📨 Girls DM кампания запущена', 'system')
+
+    // Load warmup start dates from DB (first DM date per account)
+    try {
+      const { data } = await this.orchestrator.db.supabase
+        .from('tg_girls')
+        .select('dm_sent_by, dm_sent_at')
+        .not('dm_sent_by', 'is', null)
+        .order('dm_sent_at', { ascending: true })
+      for (const row of (data || [])) {
+        if (row.dm_sent_by && row.dm_sent_at && !this._dmStartDates.has(row.dm_sent_by)) {
+          // Find TG account ID by username
+          for (const [id, session] of this.orchestrator.telegramAccounts) {
+            if (session.username === row.dm_sent_by) {
+              this._dmStartDates.set(id, row.dm_sent_at)
+              break
+            }
+          }
+        }
+      }
+    } catch (e) {
+      this.orchestrator.log(null, `📨 Warmup dates load error: ${e.message}`, 'warn')
+    }
+
+    this.orchestrator.log(null, '📨 Girls DM кампания запущена (warmup mode)', 'system')
+
+    // Log warmup status per account
+    for (const [id, session] of this.orchestrator.telegramAccounts) {
+      if (session.status !== 'active') continue
+      const warmup = getWarmupConfig(this._dmStartDates.get(id))
+      const startDate = this._dmStartDates.get(id)
+      const day = startDate ? Math.floor((Date.now() - new Date(startDate).getTime()) / 86400000) + 1 : 0
+      this.orchestrator.log(null, `📨 @${session.username}: день ${day}, лимит ${warmup.limit} DM, задержка ${Math.round(warmup.delayMin/60000)}-${Math.round(warmup.delayMax/60000)} мин`, 'system')
+    }
 
     // Start a worker for EACH active account
     this._startAllWorkers()
@@ -115,14 +162,28 @@ export class GirlsDmEngine {
           if (this._repliedUsers.has(senderId)) return
           this._repliedUsers.add(senderId)
 
+          const text = (msg.message || '').trim().toLowerCase()
+
+          // Detect NEGATIVE responses — don't send link, just mark as replied
+          const NEGATIVE = ['לא', 'לא מעניין', 'לא תודה', 'no', 'not interested', 'stop', 'spam', 'חסום', 'block', 'לא רלוונטי', 'תפסיק', 'עזוב']
+          const isNegative = NEGATIVE.some(n => text.includes(n))
+
           // Mark as replied in DB
           await this.orchestrator.db.dbUpdateGirlDmStatus(girl.id, 'replied')
 
-          // Send bot link
+          if (isNegative) {
+            this.orchestrator.log(null,
+              `📨 💬 @${session.username} ← @${girl.username || senderId}: "${text.slice(0,30)}" — תשובה שלילית, לא שולחים קישור`,
+              'system'
+            )
+            return // DON'T send link on negative response
+          }
+
+          // Positive/neutral/question — send site link
           await session.client.sendMessage(msg.chatId || senderId, { message: AUTO_REPLY_HE })
 
           this.orchestrator.log(null,
-            `📨 💬 @${session.username} ← @${girl.username || senderId} ответила! Бот-ссылка отправлена`,
+            `📨 💬 @${session.username} ← @${girl.username || senderId}: "${text.slice(0,30)}" — ✅ ссылка отправлена`,
             'system'
           )
         } catch (err) {
@@ -152,7 +213,8 @@ export class GirlsDmEngine {
     for (const [id, session] of this.orchestrator.telegramAccounts) {
       if (session.status !== 'active' || !session.client?.connected) continue
       if (this._floodedAccounts.has(id)) continue
-      if ((this._dailySent.get(id) || 0) >= MAX_DMS_PER_ACCOUNT_PER_DAY) continue
+      const warmup = getWarmupConfig(this._dmStartDates.get(id))
+      if ((this._dailySent.get(id) || 0) >= warmup.limit) continue
       if (this._workers.has(id)) continue // already running
 
       // Stagger start: random 10-60s offset per account
@@ -181,10 +243,13 @@ export class GirlsDmEngine {
       return
     }
 
-    // Check daily limit
+    // Check daily limit (warmup-aware)
+    const warmup = getWarmupConfig(this._dmStartDates.get(accountId))
     const sent = this._dailySent.get(accountId) || 0
-    if (sent >= MAX_DMS_PER_ACCOUNT_PER_DAY) {
-      this.orchestrator.log(null, `📨 @${session.username} — достиг лимита ${sent}/${MAX_DMS_PER_ACCOUNT_PER_DAY}`, 'system')
+    if (sent >= warmup.limit) {
+      const startDate = this._dmStartDates.get(accountId)
+      const day = startDate ? Math.floor((Date.now() - new Date(startDate).getTime()) / 86400000) + 1 : 1
+      this.orchestrator.log(null, `📨 @${session.username} — лимит ${sent}/${warmup.limit} (день ${day} прогрева)`, 'system')
       this._workers.delete(accountId)
       return
     }
@@ -205,9 +270,9 @@ export class GirlsDmEngine {
       this.orchestrator.log(null, `📨 Worker @${session.username} error: ${err.message}`, 'warn')
     }
 
-    // Schedule next DM for THIS account
+    // Schedule next DM for THIS account (warmup-aware delays)
     if (this._running && !this._floodedAccounts.has(accountId)) {
-      const delay = DM_DELAY_MIN + Math.random() * (DM_DELAY_MAX - DM_DELAY_MIN)
+      const delay = warmup.delayMin + Math.random() * (warmup.delayMax - warmup.delayMin)
       this._workers.set(accountId, setTimeout(() => this._workerLoop(accountId), delay))
     } else {
       this._workers.delete(accountId)
@@ -258,12 +323,18 @@ export class GirlsDmEngine {
       // Update DB
       await this.orchestrator.db.dbUpdateGirlDmStatus(girl.id, 'sent', session.username || session.phone)
 
+      // Track warmup start date (first DM ever from this account)
+      if (!this._dmStartDates.has(accountId)) {
+        this._dmStartDates.set(accountId, new Date().toISOString())
+      }
+
       // Update daily counter
       this._dailySent.set(accountId, (this._dailySent.get(accountId) || 0) + 1)
       const sent = this._dailySent.get(accountId)
 
+      const warmup = getWarmupConfig(this._dmStartDates.get(accountId))
       this.orchestrator.log(null,
-        `📨 ✅ @${session.username} → @${girl.username || girl.user_id} (${girl.first_name}) [${sent}/${MAX_DMS_PER_ACCOUNT_PER_DAY}]`,
+        `📨 ✅ @${session.username} → @${girl.username || girl.user_id} (${girl.first_name}) [${sent}/${warmup.limit}]`,
         'system'
       )
 
@@ -271,7 +342,7 @@ export class GirlsDmEngine {
       const msg = err.errorMessage || err.message || 'Unknown'
 
       if (msg === 'PEER_FLOOD' || msg === 'PeerFloodError') {
-        this._dailySent.set(accountId, MAX_DMS_PER_ACCOUNT_PER_DAY)
+        this._dailySent.set(accountId, 999) // max out to stop this account
         this._floodedAccounts.add(accountId)
         this.orchestrator.log(null, `📨 🚫 @${session.username} — PeerFlood, снят на сегодня`, 'warn')
         await this.orchestrator.db.dbUpdateGirlDmStatus(girl.id, 'pending') // return to queue

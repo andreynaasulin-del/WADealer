@@ -13,15 +13,19 @@ import { extractConversationData, calculateScore, scoreCategory } from '../ai-re
 
 export default async function campaignRoutes(fastify) {
   // GET /api/campaigns — includes total_leads count
-  fastify.get('/api/campaigns', async (_req, reply) => {
+  fastify.get('/api/campaigns', async (req, reply) => {
     const [campaigns, leadsCounts] = await Promise.all([
       dbGetAllCampaigns(),
       dbGetLeadsCounts(),
     ])
-    const enriched = campaigns.map(c => ({
+    let enriched = campaigns.map(c => ({
       ...c,
       total_leads: leadsCounts[c.id] || 0,
     }))
+    // Filter by team_id if not admin
+    if (req.user && !req.user.is_admin) {
+      enriched = enriched.filter(c => c.team_id === req.user.team_id)
+    }
     return reply.send(enriched)
   })
 
@@ -42,7 +46,11 @@ export default async function campaignRoutes(fastify) {
       },
     },
   }, async (req, reply) => {
-    const campaign = await dbCreateCampaign(req.body)
+    const campaign = await dbCreateCampaign({
+      ...req.body,
+      user_id: req.user?.id,
+      team_id: req.user?.team_id,
+    })
     return reply.code(201).send(campaign)
   })
 

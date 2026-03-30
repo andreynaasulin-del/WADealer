@@ -7,9 +7,13 @@ export default async function telegramRoutes(fastify) {
   // ACCOUNTS (user profiles, not bots)
   // ══════════════════════════════════════════════════════════════════════════
 
-  // ── GET /api/telegram/accounts — list all accounts ───────────────────────
+  // ── GET /api/telegram/accounts — list accounts (filtered by user) ────────
   fastify.get('/api/telegram/accounts', async (req, reply) => {
-    const accounts = orchestrator.getAllTelegramAccountStates()
+    let accounts = orchestrator.getAllTelegramAccountStates()
+    // Filter by user if not admin
+    if (req.user && !req.user.is_admin) {
+      accounts = accounts.filter(a => a.user_id === req.user.id)
+    }
     return reply.send(accounts)
   })
 
@@ -26,7 +30,21 @@ export default async function telegramRoutes(fastify) {
     },
   }, async (req, reply) => {
     const { phone } = req.body
-    const result = await orchestrator.createTelegramAccount(phone)
+    const userId = req.user?.id || null
+    const teamId = req.user?.team_id || null
+
+    // ── Tier limits ──
+    if (req.user && !req.user.is_admin && teamId) {
+      const { dbCountUserSessions } = await import('../db.js')
+      const counts = await dbCountUserSessions(teamId)
+      const limits = { start: 3, pro: 20, enterprise: 999 }
+      const maxTg = limits[req.user.tier] || 3
+      if (counts.tg >= maxTg) {
+        return reply.code(403).send({ error: `Лимит TG аккаунтов: ${maxTg}. Текущих: ${counts.tg}. Обновите тариф.` })
+      }
+    }
+
+    const result = await orchestrator.createTelegramAccount(phone, userId, teamId)
     return reply.code(201).send(result)
   })
 
@@ -124,6 +142,10 @@ export default async function telegramRoutes(fastify) {
       const totalLeads = await db.dbCountTelegramLeads(c.id)
       return { ...c, total_leads: totalLeads }
     }))
+    // Filter by team_id if not admin
+    if (req.user && !req.user.is_admin) {
+      return reply.send(enriched.filter(c => c.team_id === req.user.team_id))
+    }
     return reply.send(enriched)
   })
 
@@ -142,7 +164,11 @@ export default async function telegramRoutes(fastify) {
       },
     },
   }, async (req, reply) => {
-    const campaign = await db.dbCreateTelegramCampaign(req.body)
+    const campaign = await db.dbCreateTelegramCampaign({
+      ...req.body,
+      user_id: req.user?.id,
+      team_id: req.user?.team_id,
+    })
     return reply.code(201).send(campaign)
   })
 
@@ -210,6 +236,13 @@ export default async function telegramRoutes(fastify) {
     const stats = await db.dbGetTelegramStats()
     stats.queue_status = orchestrator.telegramQueue?.status || 'stopped'
     stats.queue_size = orchestrator.telegramQueue?.size || 0
+    // Filter account counts by user if not admin
+    if (req.user && !req.user.is_admin) {
+      const accounts = orchestrator.getAllTelegramAccountStates()
+      const userAccounts = accounts.filter(a => a.user_id === req.user.id)
+      stats.accounts_total = userAccounts.length
+      stats.accounts_active = userAccounts.filter(a => a.status === 'active').length
+    }
     return reply.send(stats)
   })
 
@@ -376,6 +409,32 @@ export default async function telegramRoutes(fastify) {
   })
 
   // ══════════════════════════════════════════════════════════════════════════
+  // SMART INVITE — auto-detect admin groups per account
+  // ══════════════════════════════════════════════════════════════════════════
+
+  fastify.get('/api/telegram/admin-groups', async (req, reply) => {
+    const result = await orchestrator.detectAdminGroups()
+    return reply.send(result)
+  })
+
+  fastify.post('/api/telegram/invite/smart-start', async (req, reply) => {
+    const { daily_limit_per_account } = req.body || {}
+    orchestrator.startSmartInvite(daily_limit_per_account || 40).catch(err => {
+      orchestrator.log(null, `Smart invite error: ${err.message}`, 'error', 'telegram')
+    })
+    return reply.send({ ok: true })
+  })
+
+  fastify.post('/api/telegram/invite/smart-stop', async (req, reply) => {
+    orchestrator.stopSmartInvite()
+    return reply.send({ ok: true })
+  })
+
+  fastify.get('/api/telegram/invite/smart-status', async (req, reply) => {
+    return reply.send(orchestrator.getSmartInviteStatus())
+  })
+
+  // ══════════════════════════════════════════════════════════════════════════
   // GIRLS SCRAPER & DM CAMPAIGN
   // ══════════════════════════════════════════════════════════════════════════
 
@@ -456,4 +515,5 @@ export default async function telegramRoutes(fastify) {
     if (error) return reply.code(500).send({ error: error.message })
     return reply.send({ data, count })
   })
+
 }

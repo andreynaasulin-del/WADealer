@@ -3,6 +3,7 @@ import { humanDelay } from './human-delay.js'
 import {
   dbMarkLeadSent, dbMarkLeadFailed, dbIncrementCampaignSent, dbIncrementCampaignErrors,
   dbMarkTelegramLeadSent, dbMarkTelegramLeadFailed, dbIncrementTgCampaignSent, dbIncrementTgCampaignErrors,
+  dbCheckBlacklist, dbAddToBlacklist,
 } from './db.js'
 
 function sleep(ms) {
@@ -12,7 +13,7 @@ function sleep(ms) {
 /**
  * @typedef {{ id: string, phone: string, campaignId: string, template: string,
  *             sessionPhone: string, delayMinSec: number, delayMaxSec: number,
- *             platform?: 'whatsapp' | 'telegram' }} QueueItem
+ *             platform?: 'whatsapp' | 'telegram', teamId?: string }} QueueItem
  */
 
 export class MessageQueue {
@@ -168,6 +169,20 @@ export class MessageQueue {
       // Remove from queue before attempting send
       this.items.shift()
 
+      // ── Blacklist check — skip if phone is blacklisted ──
+      try {
+        const isBlacklisted = await dbCheckBlacklist(item.phone, item.teamId)
+        if (isBlacklisted) {
+          this.orchestrator.log(
+            item.sessionPhone,
+            `⛔ Пропуск ${item.phone} — в чёрном списке`,
+            'warn', itemPlatform
+          )
+          this.orchestrator.broadcast({ type: 'stats_update', inQueueDelta: -1, platform: itemPlatform })
+          continue
+        }
+      } catch (_) { /* blacklist check failed — proceed with send */ }
+
       // Daily limit check
       const sendSessionPhone = activeSession.phone || item.sessionPhone
       if (itemPlatform === 'whatsapp' && !this.orchestrator.canSend(sendSessionPhone)) {
@@ -220,6 +235,9 @@ export class MessageQueue {
         if (itemPlatform === 'whatsapp') {
           this.orchestrator._incrementDailyCount(sendSessionPhone)
         }
+
+        // ── Auto-add to blacklist (dedup — prevent other accounts from messaging same phone) ──
+        dbAddToBlacklist(item.phone, 'contacted', item.teamId, sendSessionPhone).catch(() => {})
 
         this.orchestrator.broadcast({ type: 'stats_update', sentDelta: 1, inQueueDelta: -1, platform: itemPlatform })
         const dailyLeft = this.orchestrator.DAILY_LIMIT - this.orchestrator._getDailyCount(sendSessionPhone)

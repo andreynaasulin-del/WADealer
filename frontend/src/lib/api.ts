@@ -254,7 +254,14 @@ export const api = {
       multiStop: () => req<{ ok: boolean }>('/telegram/invite/multi-stop', { method: 'POST', body: '{}' }),
       stop: () => req<{ ok: boolean }>('/telegram/invite/stop', { method: 'POST', body: '{}' }),
       status: () => req<InviteStatus>('/telegram/invite/status'),
+      smartStart: (dailyLimitPerAccount?: number) =>
+        req<{ ok: boolean }>('/telegram/invite/smart-start', {
+          method: 'POST', body: JSON.stringify({ daily_limit_per_account: dailyLimitPerAccount }),
+        }),
+      smartStop: () => req<{ ok: boolean }>('/telegram/invite/smart-stop', { method: 'POST', body: '{}' }),
+      smartStatus: () => req<Record<string, unknown>>('/telegram/invite/smart-status'),
     },
+    adminGroups: () => req<Record<string, { phone: string; username: string; adminGroups: Array<{ id: string; title: string; username: string | null; participantsCount: number; isChannel: boolean; isMegagroup: boolean }> }>>('/telegram/admin-groups'),
     settings: {
       get: (accountId: string) => req<AccountSettings>(`/telegram/accounts/${accountId}/settings`),
       update: (accountId: string, settings: Partial<AccountSettings>) =>
@@ -266,6 +273,79 @@ export const api = {
           method: 'PUT', body: JSON.stringify({ proxy_string: proxyString }),
         }),
     },
+  },
+
+  // ─── Teams ─────────────────────────────────────────────────────────────────
+  teams: {
+    getCurrent: () => req<TeamData>('/teams/current'),
+    create: (name: string) =>
+      req<TeamData>('/teams', { method: 'POST', body: JSON.stringify({ name }) }),
+    createInvite: (role?: string, email?: string) =>
+      req<TeamInvite>('/teams/invite', { method: 'POST', body: JSON.stringify({ role, email }) }),
+    join: (token: string) =>
+      req<{ ok: boolean }>('/teams/join', { method: 'POST', body: JSON.stringify({ token }) }),
+    updateMemberRole: (userId: string, role: string) =>
+      req<{ ok: boolean }>(`/teams/members/${userId}/role`, { method: 'PUT', body: JSON.stringify({ role }) }),
+    removeMember: (userId: string) =>
+      req<void>(`/teams/members/${userId}`, { method: 'DELETE' }),
+    updateOperatorStatus: (status: string) =>
+      req<{ ok: boolean }>('/teams/status', { method: 'PUT', body: JSON.stringify({ status }) }),
+    assignResource: (userId: string, resourceType: string, resourceId: string) =>
+      req<{ ok: boolean }>('/teams/assign', { method: 'POST', body: JSON.stringify({ user_id: userId, resource_type: resourceType, resource_id: resourceId }) }),
+    unassignResource: (userId: string, resourceType: string, resourceId: string) =>
+      req<{ ok: boolean }>('/teams/assign', { method: 'DELETE', body: JSON.stringify({ user_id: userId, resource_type: resourceType, resource_id: resourceId }) }),
+  },
+
+  // ─── Farm ─────────────────────────────────────────────────────────────────
+  farm: {
+    accounts: {
+      list: (params?: { stage?: string; owner_type?: string }) => {
+        const qs = new URLSearchParams(params as Record<string, string>).toString()
+        return req<FarmAccount[]>(`/farm/accounts${qs ? `?${qs}` : ''}`)
+      },
+      get: (id: string) => req<FarmAccount>(`/farm/accounts/${id}`),
+      create: (data: CreateFarmAccount) =>
+        req<FarmAccount>('/farm/accounts', { method: 'POST', body: JSON.stringify(data) }),
+      update: (id: string, data: Partial<FarmAccount>) =>
+        req<FarmAccount>(`/farm/accounts/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
+      remove: (id: string) => req<{ ok: boolean }>(`/farm/accounts/${id}`, { method: 'DELETE' }),
+      startWarmup: (id: string) =>
+        req<FarmAccount>(`/farm/accounts/${id}/start-warmup`, { method: 'POST', body: '{}' }),
+      recalcHealth: (id: string) =>
+        req<FarmAccount>(`/farm/accounts/${id}/recalc-health`, { method: 'POST', body: '{}' }),
+    },
+    connectOwn: (phone_number: string, proxy_string?: string) =>
+      req<FarmAccount>('/farm/connect-own', { method: 'POST', body: JSON.stringify({ phone_number, proxy_string }) }),
+    stats: () => req<FarmStats>('/farm/stats'),
+  },
+
+  // ─── Marketplace ─────────────────────────────────────────────────────────
+  marketplace: {
+    accounts: () => req<MarketplaceAccount[]>('/marketplace/accounts'),
+    get: (id: string) => req<MarketplaceAccount>(`/marketplace/accounts/${id}`),
+    purchase: (id: string) =>
+      req<{ ok: boolean; account_id: string; phone_number: string; message: string }>(
+        `/marketplace/purchase/${id}`, { method: 'POST', body: '{}' }
+      ),
+    myAccounts: () => req<FarmAccount[]>('/marketplace/my-accounts'),
+    returnAccount: (id: string) =>
+      req<{ ok: boolean; message: string }>(`/marketplace/return/${id}`, { method: 'POST', body: '{}' }),
+  },
+
+  // ─── Blacklist ─────────────────────────────────────────────────────────────
+  blacklist: {
+    list: (params?: { reason?: string; search?: string; limit?: number; offset?: number }) => {
+      const qs = new URLSearchParams(params as Record<string, string>).toString()
+      return req<BlacklistResponse>(`/blacklist${qs ? `?${qs}` : ''}`)
+    },
+    stats: () => req<BlacklistStats>('/blacklist/stats'),
+    check: (phone: string) => req<{ phone: string; blocked: boolean }>(`/blacklist/check/${phone}`),
+    add: (phone: string, reason?: string, note?: string) =>
+      req<BlacklistEntry>('/blacklist', { method: 'POST', body: JSON.stringify({ phone, reason, note }) }),
+    bulkAdd: (phones: string[], reason?: string) =>
+      req<{ added: number }>('/blacklist/bulk', { method: 'POST', body: JSON.stringify({ phones, reason }) }),
+    remove: (phone: string) =>
+      req<{ ok: boolean }>(`/blacklist/${phone}`, { method: 'DELETE' }),
   },
 
   // ─── Dashboard ──────────────────────────────────────────────────────────────
@@ -609,4 +689,124 @@ export interface GirlProfile {
   lead_id: string | null
   created_at: string
   updated_at: string
+}
+
+// ─── Team Types ──────────────────────────────────────────────────────────────
+
+export interface TeamMember {
+  id: string
+  email: string
+  display_name: string
+  role: string
+  team_role: string
+  status: 'online' | 'busy' | 'offline'
+  assigned_wa_sessions: string[]
+  assigned_tg_accounts: string[]
+  last_active_at: string | null
+}
+
+export interface TeamData {
+  id: string
+  name: string
+  owner_id: string
+  members: TeamMember[]
+  created_at: string
+}
+
+export interface TeamInvite {
+  id: string
+  token: string
+  role: string
+  email: string | null
+  expires_at: string
+  created_at: string
+}
+
+// ���── Blacklist Types ──────���─────────────────────────────────────────────────
+
+export interface BlacklistEntry {
+  id: string
+  phone: string
+  reason: 'contacted' | 'complained' | 'blocked_us' | 'manual' | 'spam_report'
+  scope: 'team' | 'global'
+  source_team_id: string | null
+  added_by_user_id: string | null
+  contacted_by_session: string | null
+  contacted_at: string | null
+  note: string | null
+  created_at: string
+}
+
+export interface BlacklistResponse {
+  items: BlacklistEntry[]
+  total: number
+}
+
+export interface BlacklistStats {
+  total: number
+  by_reason: Record<string, number>
+}
+
+// ─── Farm Types ─────────────────────────────────────────────────────────────
+
+export interface FarmAccount {
+  id: string
+  phone_number: string
+  provider: string
+  provider_order_id: string | null
+  cost_usd: number | null
+  stage: 'registered' | 'verified' | 'warming' | 'ready' | 'sold' | 'active_user' | 'banned' | 'replaced'
+  session_phone: string | null
+  proxy_string: string | null
+  warmup_day: number
+  messages_sent_total: number
+  messages_received_total: number
+  groups_joined: number
+  status_updates: number
+  health_score: number
+  has_avatar: boolean
+  has_status: boolean
+  display_name: string | null
+  owner_type: 'platform' | 'user'
+  owner_user_id: string | null
+  sold_to_user_id: string | null
+  sold_at: string | null
+  sale_price_usd: number | null
+  ban_count: number
+  last_ban_at: string | null
+  registered_at: string
+  ready_at: string | null
+  created_at: string
+}
+
+export interface CreateFarmAccount {
+  phone_number: string
+  provider?: string
+  cost_usd?: number
+  proxy_string?: string
+  display_name?: string
+  owner_type?: 'platform' | 'user'
+}
+
+export interface FarmStats {
+  total: number
+  by_stage: Record<string, number>
+  by_owner: Record<string, number>
+  avg_health: number
+}
+
+export interface MarketplaceAccount {
+  id: string
+  phone_prefix: string
+  provider: string
+  warmup_day: number
+  health_score: number
+  has_avatar: boolean
+  has_status: boolean
+  groups_joined: number
+  messages_sent_total: number
+  messages_received_total: number
+  sale_price_usd: number | null
+  registered_at: string
+  ready_at: string | null
 }

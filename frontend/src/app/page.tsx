@@ -226,7 +226,22 @@ export default function PlatformSelector() {
               <h2 className="text-green-400 font-bold text-sm tracking-wider">Dashboard</h2>
               <p className="text-zinc-500 text-xs">Статистика, heartbeat, тарифы</p>
             </div>
-            <span className="text-zinc-700 text-xs">→</span>
+            <span className="text-zinc-700 text-xs">&rarr;</span>
+          </button>
+
+          {/* Team button */}
+          <button
+            onClick={() => router.push('/team')}
+            className="w-full max-w-[540px] bg-zinc-900/60 border border-zinc-800 rounded-xl p-4
+                       hover:border-purple-500/40 hover:bg-purple-950/10 transition-all duration-300
+                       cursor-pointer flex items-center gap-4"
+          >
+            <div className="text-2xl">👥</div>
+            <div className="text-left flex-1">
+              <h2 className="text-purple-400 font-bold text-sm tracking-wider">Team</h2>
+              <p className="text-zinc-500 text-xs">Команда, роли, назначения ресурсов</p>
+            </div>
+            <span className="text-zinc-700 text-xs">&rarr;</span>
           </button>
 
           {/* Cards */}
@@ -301,6 +316,42 @@ export default function PlatformSelector() {
                   <span className="inline-block w-2 h-2 rounded-full bg-blue-400 animate-pulse" />
                 </div>
               )}
+            </button>
+          </div>
+
+          {/* Tool cards */}
+          <div className="flex flex-wrap gap-3 justify-center">
+            <button
+              onClick={() => router.push('/farm')}
+              className="px-4 py-2 bg-zinc-900/60 border border-zinc-800 rounded-lg
+                         hover:border-yellow-700/60 hover:bg-yellow-950/20 transition-all text-sm"
+            >
+              <span className="text-yellow-400 font-medium">Farm</span>
+              <span className="text-zinc-600 ml-2 text-xs">Warmup & Monitor</span>
+            </button>
+            <button
+              onClick={() => router.push('/marketplace')}
+              className="px-4 py-2 bg-zinc-900/60 border border-zinc-800 rounded-lg
+                         hover:border-green-700/60 hover:bg-green-950/20 transition-all text-sm"
+            >
+              <span className="text-green-400 font-medium">Marketplace</span>
+              <span className="text-zinc-600 ml-2 text-xs">Buy Accounts</span>
+            </button>
+            <button
+              onClick={() => router.push('/blacklist')}
+              className="px-4 py-2 bg-zinc-900/60 border border-zinc-800 rounded-lg
+                         hover:border-red-700/60 hover:bg-red-950/20 transition-all text-sm"
+            >
+              <span className="text-red-400 font-medium">Blacklist</span>
+              <span className="text-zinc-600 ml-2 text-xs">Global Block</span>
+            </button>
+            <button
+              onClick={() => router.push('/team')}
+              className="px-4 py-2 bg-zinc-900/60 border border-zinc-800 rounded-lg
+                         hover:border-purple-700/60 hover:bg-purple-950/20 transition-all text-sm"
+            >
+              <span className="text-purple-400 font-medium">Team</span>
+              <span className="text-zinc-600 ml-2 text-xs">Multi-operator</span>
             </button>
           </div>
 

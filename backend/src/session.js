@@ -1,6 +1,7 @@
 import fs from 'fs'
 import path from 'path'
 import { EventEmitter } from 'events'
+import { forwardToOperatorGroup } from './wadealer-bot.js'
 import makeWASocket, {
   useMultiFileAuthState,
   DisconnectReason,
@@ -263,7 +264,7 @@ export class Session extends EventEmitter {
           this.qrCode = null
           this.connectedAt = new Date().toISOString()
           this.reconnectAttempts = 0
-          this._401retried = false
+          this._401count = 0
           this.log(`✅ Подключено (${connectionLabel})`)
           this.orchestrator.broadcast({ type: 'session_update', phone: this.phone, status: 'online', qrCode: null })
           await this.orchestrator.db.dbUpdateSessionStatus(this.phone, 'online')
@@ -295,16 +296,21 @@ export class Session extends EventEmitter {
           const reason = lastDisconnect?.error?.message || 'unknown'
 
           if (code === DisconnectReason.loggedOut || code === 401) {
-            if (!this._401retried) {
-              // 401 часто бывает ложным — пробуем 1 раз
-              this._401retried = true
-              this.log(`401 — пробуем переподключиться...`, 'warn')
-              this._scheduleReconnect('401_first', code)
+            this._401count = (this._401count || 0) + 1
+            if (this._401count <= 3) {
+              // 401 часто бывает ложным при рестарте сервера — пробуем до 3 раз
+              const delay = this._401count * 15000 // 15с, 30с, 45с
+              this.log(`401 (попытка ${this._401count}/3) — реконнект через ${delay/1000}с...`, 'warn')
+              clearTimeout(this._reconnectTimer)
+              this._reconnectTimer = setTimeout(() => {
+                this._reconnectTimer = null
+                if (!this.stopped) this.start()
+              }, delay)
             } else {
-              // Повторный 401 — реально разлогинен — удаляем credentials и перезапускаем с QR
-              this._401retried = false
+              // 4-й 401 подряд — реально разлогинен — удаляем credentials
+              this._401count = 0
               this.reconnectAttempts = 0
-              this.log(`Повторный 401 — удаляю credentials, перезапуск для нового QR...`, 'warn')
+              this.log(`401 x4 — реально разлогинен, удаляю credentials...`, 'warn')
 
               // Удалить старые credentials чтобы при рестарте получить новый QR
               const sessionDir = path.resolve(SESSIONS_DIR, this.phone.replace(/\+/g, ''))
@@ -425,16 +431,23 @@ export class Session extends EventEmitter {
       stickerMessage:  { emoji: '🏷️', label: 'Стикер',  ext: 'webp' },
     }
 
+    let _mediaBuffer = null
+    let _mediaType = null
+    let _mediaMime = null
+
     for (const [mType, mInfo] of Object.entries(mediaTypes)) {
       const mediaMsg = msg.message?.[mType]
       if (!mediaMsg) continue
       const caption = mediaMsg.caption || ''
       try {
         const buffer = await downloadMediaMessage(msg, 'buffer', {})
+        _mediaBuffer = buffer
+        _mediaType = mType.replace('Message', '')
+        _mediaMime = mediaMsg.mimetype || 'application/octet-stream'
         const ts = Date.now()
         const fname = `${ts}_${from}.${mInfo.ext}`
-        const url = await this.orchestrator.db.dbUploadMedia(buffer, fname, mediaMsg.mimetype || `application/octet-stream`)
-        text = `[media:${mType.replace('Message', '')}:${url}]`
+        const url = await this.orchestrator.db.dbUploadMedia(buffer, fname, _mediaMime)
+        text = `[media:${_mediaType}:${url}]`
         if (caption) text += `\n${caption}`
       } catch (err) {
         text = `[${mInfo.emoji} ${mInfo.label}]`
@@ -458,6 +471,24 @@ export class Session extends EventEmitter {
     }
     const unresolvedLid = (isLid && from === rawFrom) ? rawFrom : null
     this.orchestrator.handleReply(from, text, this.phone, unresolvedLid)
+
+    // Forward to operator TG group
+    if (text) {
+      try {
+        const displayNumber = isLid ? (this._lidToPhone.get(rawFrom) || `LID:${rawFrom}`) : from
+        forwardToOperatorGroup({
+          from: displayNumber,
+          name: msg.pushName || displayNumber,
+          message: text,
+          channel: 'whatsapp',
+          sessionPhone: this.phone,
+          contactId: rawJid,
+          mediaBuffer: _mediaBuffer,
+          mediaType: _mediaType,
+          mediaMime: _mediaMime,
+        })
+      } catch {}
+    }
   }
 
   /**

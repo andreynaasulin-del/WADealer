@@ -14,11 +14,13 @@ const supabase = createClient(
 
 // ─── Sessions ────────────────────────────────────────────────────────────────
 
-export async function dbGetAllSessions() {
-  const { data, error } = await supabase
+export async function dbGetAllSessions(userId = null) {
+  let query = supabase
     .from('wa_sessions')
     .select('*')
     .order('created_at', { ascending: true })
+  if (userId) query = query.eq('user_id', userId)
+  const { data, error } = await query
   if (error) throw error
   return data
 }
@@ -75,9 +77,11 @@ export async function dbGetLeadsCounts() {
   return counts
 }
 
-export async function dbCreateCampaign({ name, template_text, session_id, delay_min_sec = 240, delay_max_sec = 540, ai_criteria }) {
+export async function dbCreateCampaign({ name, template_text, session_id, delay_min_sec = 240, delay_max_sec = 540, ai_criteria, user_id, team_id }) {
   const row = { name, template_text, session_id, delay_min_sec, delay_max_sec }
   if (ai_criteria) row.ai_criteria = ai_criteria
+  if (user_id) row.user_id = user_id
+  if (team_id) row.team_id = team_id
   const { data, error } = await supabase
     .from('wa_campaigns')
     .insert(row)
@@ -398,17 +402,19 @@ export async function dbCountInviteTokens() {
 // ─── Auth: Sessions ──────────────────────────────────────────────────────────
 
 /** Create an auth session after invite validation */
-export async function dbCreateAuthSession(inviteId) {
+export async function dbCreateAuthSession(inviteId, userId = null) {
   const token = generateToken()
   const expiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000) // 30 days
+  const row = {
+    token,
+    invite_id: inviteId,
+    user_id: userId,
+    expires_at: expiresAt.toISOString(),
+    last_active_at: new Date().toISOString(),
+  }
   const { data, error } = await supabase
     .from('wa_auth_sessions')
-    .insert({
-      token,
-      invite_id: inviteId,
-      expires_at: expiresAt.toISOString(),
-      last_active_at: new Date().toISOString(),
-    })
+    .insert(row)
     .select()
     .single()
   if (error) throw error
@@ -456,22 +462,23 @@ export async function dbCountAuthSessions() {
 
 // ─── Telegram: Accounts ─────────────────────────────────────────────────────
 
-export async function dbGetAllTelegramAccounts() {
-  const { data, error } = await supabase
+export async function dbGetAllTelegramAccounts(userId = null) {
+  let query = supabase
     .from('tg_accounts')
     .select('*')
     .order('created_at', { ascending: true })
+  if (userId) query = query.eq('user_id', userId)
+  const { data, error } = await query
   if (error) throw error
   return data || []
 }
 
-export async function dbCreateTelegramAccount(phone) {
+export async function dbCreateTelegramAccount(phone, userId = null) {
+  const row = { phone, status: 'disconnected' }
+  if (userId) row.user_id = userId
   const { data, error } = await supabase
     .from('tg_accounts')
-    .insert({
-      phone,
-      status: 'disconnected',
-    })
+    .insert(row)
     .select()
     .single()
   if (error) throw error
@@ -523,10 +530,13 @@ export async function dbGetAllTelegramCampaigns() {
   return data || []
 }
 
-export async function dbCreateTelegramCampaign({ name, template_text, account_id, delay_min_sec = 3, delay_max_sec = 8 }) {
+export async function dbCreateTelegramCampaign({ name, template_text, account_id, delay_min_sec = 3, delay_max_sec = 8, user_id, team_id }) {
+  const row = { name, template_text, account_id, delay_min_sec, delay_max_sec }
+  if (user_id) row.user_id = user_id
+  if (team_id) row.team_id = team_id
   const { data, error } = await supabase
     .from('tg_campaigns')
-    .insert({ name, template_text, account_id, delay_min_sec, delay_max_sec })
+    .insert(row)
     .select()
     .single()
   if (error) throw error
@@ -1238,6 +1248,133 @@ export async function dbGetAdminUser() {
   return data
 }
 
+export async function dbFindUserByEmail(email) {
+  const { data, error } = await supabase
+    .from('wa_users')
+    .select('*')
+    .eq('email', email.toLowerCase().trim())
+    .single()
+  if (error) return null
+  return data
+}
+
+export async function dbCreateUser(email, passwordHash, displayName = null, tier = 'start') {
+  const { data, error } = await supabase
+    .from('wa_users')
+    .insert({
+      email: email.toLowerCase().trim(),
+      password_hash: passwordHash,
+      display_name: displayName || email.split('@')[0],
+      tier,
+    })
+    .select()
+    .single()
+  if (error) throw error
+  return data
+}
+
+// ─── Teams ──────────────────────────────────────────────────────────────────
+
+export async function dbCreateTeam(name, ownerId) {
+  const { data, error } = await supabase
+    .from('wa_teams')
+    .insert({ name, owner_id: ownerId })
+    .select()
+    .single()
+  if (error) throw error
+  return data
+}
+
+export async function dbAddTeamMember(teamId, userId, role = 'admin') {
+  const { data, error } = await supabase
+    .from('wa_team_members')
+    .insert({ team_id: teamId, user_id: userId, role })
+    .select()
+    .single()
+  if (error) throw error
+  return data
+}
+
+export async function dbGetUserTeam(userId) {
+  const { data, error } = await supabase
+    .from('wa_team_members')
+    .select('team_id, role, wa_teams(name)')
+    .eq('user_id', userId)
+    .limit(1)
+    .single()
+  if (error || !data) return null
+  return {
+    team_id: data.team_id,
+    role: data.role,
+    team_name: data.wa_teams?.name ?? null,
+  }
+}
+
+export async function dbCreateBetaInvite(createdBy, label = null) {
+  const crypto = await import('crypto')
+  const token = crypto.randomBytes(16).toString('hex')
+  const expiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString() // 30 days
+
+  // Get creator's team (needed for NOT NULL constraint)
+  const creatorTeam = await dbGetUserTeam(createdBy)
+  const teamId = creatorTeam?.team_id
+
+  const { data, error } = await supabase
+    .from('wa_team_invites')
+    .insert({
+      team_id: teamId,
+      token,
+      role: 'admin',
+      email: label,
+      is_used: false,
+      expires_at: expiresAt,
+    })
+    .select()
+    .single()
+  if (error) throw error
+  return data
+}
+
+export async function dbValidateBetaInvite(token) {
+  const { data, error } = await supabase
+    .from('wa_team_invites')
+    .select('*')
+    .eq('token', token.trim())
+    .eq('is_used', false)
+    .single()
+  if (error || !data) return null
+  if (new Date(data.expires_at) < new Date()) return null
+  return data
+}
+
+export async function dbUseBetaInvite(id) {
+  const { error } = await supabase
+    .from('wa_team_invites')
+    .update({ is_used: true })
+    .eq('id', id)
+  if (error) console.error('[dbUseBetaInvite] Error:', error.message)
+}
+
+export async function dbGetAllBetaInvites() {
+  const { data } = await supabase
+    .from('wa_team_invites')
+    .select('*')
+    .order('created_at', { ascending: false })
+  return data || []
+}
+
+export async function dbCountUserSessions(teamId) {
+  const { count: waCount } = await supabase
+    .from('wa_sessions')
+    .select('id', { count: 'exact', head: true })
+    .eq('team_id', teamId)
+  const { count: tgCount } = await supabase
+    .from('tg_accounts')
+    .select('id', { count: 'exact', head: true })
+    .eq('team_id', teamId)
+  return { wa: waCount || 0, tg: tgCount || 0 }
+}
+
 export async function dbGetTiers() {
   const { data, error } = await supabase
     .from('wa_tiers')
@@ -1271,6 +1408,264 @@ export async function dbGetActivityStats(startDate = null) {
     stats[row.action] = (stats[row.action] || 0) + 1
   }
   return stats
+}
+
+// ─── Blacklist ──────────────────────────────────────────────────────────────
+
+/**
+ * Check if a phone is blacklisted for a given team.
+ * Returns true if blocked (team-level or global).
+ */
+export async function dbCheckBlacklist(phone, teamId = null) {
+  let query = supabase
+    .from('wa_blacklist')
+    .select('id, reason, scope')
+    .eq('phone', phone)
+
+  if (teamId) {
+    // Match team-level OR global entries
+    query = query.or(`source_team_id.eq.${teamId},scope.eq.global`)
+  }
+
+  const { data, error } = await query.limit(1)
+  if (error) { console.error('[blacklist check]', error.message); return false }
+  return data && data.length > 0
+}
+
+/**
+ * Add phone to blacklist.
+ * Uses upsert — won't duplicate if already exists for this team.
+ */
+export async function dbAddToBlacklist(phone, reason = 'contacted', teamId = null, sessionPhone = null, userId = null, note = null) {
+  const scope = (reason === 'complained' || reason === 'blocked_us') ? 'global' : 'team'
+  const { data, error } = await supabase
+    .from('wa_blacklist')
+    .upsert({
+      phone,
+      reason,
+      scope,
+      source_team_id: teamId,
+      added_by_user_id: userId,
+      contacted_by_session: sessionPhone,
+      contacted_at: new Date().toISOString(),
+      note,
+    }, { onConflict: 'phone,source_team_id' })
+    .select()
+    .single()
+  if (error && !error.message.includes('duplicate')) {
+    console.error('[blacklist add]', error.message)
+  }
+  return data
+}
+
+/**
+ * Remove phone from blacklist (team-level only, not global unless admin).
+ */
+export async function dbRemoveFromBlacklist(phone, teamId = null, includeGlobal = false) {
+  let query = supabase
+    .from('wa_blacklist')
+    .delete()
+    .eq('phone', phone)
+
+  if (!includeGlobal && teamId) {
+    query = query.eq('source_team_id', teamId)
+  }
+
+  const { error } = await query
+  if (error) throw error
+}
+
+/**
+ * Get blacklist entries for a team (+ global).
+ */
+export async function dbGetBlacklist(teamId = null, { reason, search, limit = 100, offset = 0 } = {}) {
+  let query = supabase
+    .from('wa_blacklist')
+    .select('*', { count: 'exact' })
+    .order('created_at', { ascending: false })
+    .range(offset, offset + limit - 1)
+
+  if (teamId) {
+    query = query.or(`source_team_id.eq.${teamId},scope.eq.global`)
+  }
+  if (reason) {
+    query = query.eq('reason', reason)
+  }
+  if (search) {
+    query = query.ilike('phone', `%${search}%`)
+  }
+
+  const { data, error, count } = await query
+  if (error) throw error
+  return { items: data || [], total: count || 0 }
+}
+
+/**
+ * Bulk add phones to blacklist.
+ */
+export async function dbBulkAddToBlacklist(phones, reason = 'manual', teamId = null, userId = null) {
+  const scope = (reason === 'complained' || reason === 'blocked_us') ? 'global' : 'team'
+  const rows = phones.map(phone => ({
+    phone: phone.replace(/\D/g, ''),
+    reason,
+    scope,
+    source_team_id: teamId,
+    added_by_user_id: userId,
+    created_at: new Date().toISOString(),
+  }))
+
+  const { data, error } = await supabase
+    .from('wa_blacklist')
+    .upsert(rows, { onConflict: 'phone,source_team_id', ignoreDuplicates: true })
+    .select()
+
+  if (error) throw error
+  return data || []
+}
+
+/**
+ * Get blacklist stats for a team.
+ */
+export async function dbGetBlacklistStats(teamId = null) {
+  let query = supabase.from('wa_blacklist').select('reason', { count: 'exact' })
+  if (teamId) {
+    query = query.or(`source_team_id.eq.${teamId},scope.eq.global`)
+  }
+  const { data, error, count } = await query
+  if (error) return { total: 0, by_reason: {} }
+
+  const byReason = {}
+  for (const row of data || []) {
+    byReason[row.reason] = (byReason[row.reason] || 0) + 1
+  }
+  return { total: count || 0, by_reason: byReason }
+}
+
+// ─── Farm Accounts ──────────────────────────────────────────────────────────
+
+export async function dbGetFarmAccounts(filters = {}) {
+  let query = supabase
+    .from('wa_farm_accounts')
+    .select('*')
+    .order('created_at', { ascending: false })
+
+  if (filters.stage) query = query.eq('stage', filters.stage)
+  if (filters.owner_type) query = query.eq('owner_type', filters.owner_type)
+  if (filters.owner_user_id) query = query.eq('owner_user_id', filters.owner_user_id)
+  if (filters.sold_to_user_id) query = query.eq('sold_to_user_id', filters.sold_to_user_id)
+  if (filters.team_id) query = query.eq('team_id', filters.team_id)
+  if (filters.limit) query = query.limit(filters.limit)
+  if (filters.offset) query = query.range(filters.offset, filters.offset + (filters.limit || 50) - 1)
+
+  const { data, error } = await query
+  if (error) throw error
+  return data || []
+}
+
+export async function dbGetFarmAccount(id) {
+  const { data, error } = await supabase
+    .from('wa_farm_accounts')
+    .select('*')
+    .eq('id', id)
+    .single()
+  if (error) throw error
+  return data
+}
+
+export async function dbCreateFarmAccount({ phone_number, provider = 'manual', provider_order_id, cost_usd, proxy_string, owner_user_id, owner_type = 'platform', team_id, display_name }) {
+  const { data, error } = await supabase
+    .from('wa_farm_accounts')
+    .insert({
+      phone_number,
+      provider,
+      provider_order_id,
+      cost_usd,
+      proxy_string,
+      owner_user_id,
+      owner_type,
+      team_id,
+      display_name,
+      registered_at: new Date().toISOString(),
+    })
+    .select()
+    .single()
+  if (error) throw error
+  return data
+}
+
+export async function dbUpdateFarmAccount(id, updates) {
+  updates.updated_at = new Date().toISOString()
+  const { data, error } = await supabase
+    .from('wa_farm_accounts')
+    .update(updates)
+    .eq('id', id)
+    .select()
+    .single()
+  if (error) throw error
+  return data
+}
+
+export async function dbGetWarmingAccounts() {
+  const { data, error } = await supabase
+    .from('wa_farm_accounts')
+    .select('*')
+    .in('stage', ['warming', 'verified'])
+    .order('warmup_day', { ascending: true })
+  if (error) throw error
+  return data || []
+}
+
+export async function dbGetReadyAccounts() {
+  const { data, error } = await supabase
+    .from('wa_farm_accounts')
+    .select('*')
+    .eq('stage', 'ready')
+    .is('sold_to_user_id', null)
+    .order('health_score', { ascending: false })
+  if (error) throw error
+  return data || []
+}
+
+export async function dbPurchaseFarmAccount(accountId, userId) {
+  const { data, error } = await supabase
+    .from('wa_farm_accounts')
+    .update({
+      stage: 'sold',
+      sold_to_user_id: userId,
+      sold_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    })
+    .eq('id', accountId)
+    .eq('stage', 'ready')
+    .is('sold_to_user_id', null)
+    .select()
+    .single()
+  if (error) throw error
+  return data
+}
+
+export async function dbGetFarmStats() {
+  const { data, error } = await supabase
+    .from('wa_farm_accounts')
+    .select('stage, owner_type, health_score')
+  if (error) return { total: 0, by_stage: {}, by_owner: {} }
+
+  const byStage = {}
+  const byOwner = { platform: 0, user: 0 }
+  let totalHealth = 0
+
+  for (const row of data || []) {
+    byStage[row.stage] = (byStage[row.stage] || 0) + 1
+    byOwner[row.owner_type] = (byOwner[row.owner_type] || 0) + 1
+    totalHealth += row.health_score || 0
+  }
+
+  return {
+    total: data?.length || 0,
+    by_stage: byStage,
+    by_owner: byOwner,
+    avg_health: data?.length ? Math.round(totalHealth / data.length) : 0,
+  }
 }
 
 export { supabase }
