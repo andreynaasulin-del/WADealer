@@ -191,58 +191,25 @@ export default function DashboardPage() {
           <NavCard label="Настройки" description="Аккаунты и прокси" href="/telegram" color="amber" icon="CFG" />
         </div>
 
-        {/* ── Tier System ─────────────────────────────────────────── */}
-        {tiers.length > 0 && (
-          <div>
-            <h2 className="text-sm font-bold text-zinc-400 tracking-wider uppercase mb-4">
-              Тарифные планы
-            </h2>
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-              {tiers.map(tier => (
-                <div key={tier.id} className={`bg-zinc-900/60 border rounded-xl p-5 ${
-                  tier.id === 'pro' ? 'border-green-500/40 ring-1 ring-green-500/20' : 'border-zinc-800'
-                }`}>
-                  <div className="flex items-center justify-between mb-3">
-                    <h3 className={`font-bold text-base ${
-                      tier.id === 'start' ? 'text-zinc-400' : tier.id === 'pro' ? 'text-green-400' : 'text-amber-400'
-                    }`}>{tier.display_name}</h3>
-                    {tier.id === 'pro' && (
-                      <span className="text-[10px] bg-green-500/20 text-green-400 px-2 py-0.5 rounded-full font-bold">
-                        POPULAR
-                      </span>
-                    )}
-                  </div>
-                  <div className="text-2xl font-bold text-zinc-200 mb-4">
-                    {tier.price_monthly > 0 ? `$${tier.price_monthly}` : 'Free'}
-                    {tier.price_monthly > 0 && <span className="text-xs text-zinc-500 ml-1">/мес</span>}
-                  </div>
-                  <div className="space-y-2 text-xs text-zinc-400">
-                    <div className="flex justify-between">
-                      <span>TG аккаунты</span>
-                      <span className="text-zinc-200 font-bold">{tier.max_tg_accounts}</span>
-                    </div>
-                    <div className="flex justify-between">
-                      <span>WA сессии</span>
-                      <span className="text-zinc-200 font-bold">{tier.max_wa_sessions}</span>
-                    </div>
-                    <div className="flex justify-between">
-                      <span>Сообщений/день</span>
-                      <span className="text-zinc-200 font-bold">{tier.max_daily_messages}</span>
-                    </div>
-                    <div className="pt-2 border-t border-zinc-800 space-y-1">
-                      {Object.entries(tier.features).map(([key, val]) => (
-                        <div key={key} className="flex items-center gap-2">
-                          <span className={val ? 'text-green-400' : 'text-zinc-700'}>{val ? '✓' : '✗'}</span>
-                          <span className={val ? 'text-zinc-300' : 'text-zinc-700'}>{formatFeature(key)}</span>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                </div>
-              ))}
+        {/* ── Pricing / Contact ────────────────────────────────────── */}
+        <div className="bg-gradient-to-r from-green-950/30 to-zinc-900/60 border border-green-500/20 rounded-xl p-6">
+          <div className="flex items-center justify-between">
+            <div>
+              <h2 className="text-lg font-bold text-zinc-100 mb-1">Upgrade your plan</h2>
+              <p className="text-sm text-zinc-400">
+                Unlimited WhatsApp + Telegram + Email outreach. Custom setup for your business.
+              </p>
             </div>
+            <a
+              href="https://t.me/duhdeveloper"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="px-6 py-3 bg-green-600 hover:bg-green-700 text-white rounded-xl text-sm font-bold transition-colors whitespace-nowrap"
+            >
+              Write @duhdeveloper
+            </a>
           </div>
-        )}
+        </div>
       </main>
     </div>
   )

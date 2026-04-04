@@ -294,8 +294,21 @@ export default function LoginPage() {
           )}
         </div>
 
+        {/* Contact */}
+        <div className="mt-6 bg-zinc-900/60 border border-zinc-800 rounded-xl p-4 text-center">
+          <p className="text-xs text-zinc-500 mb-2">Questions? Need access?</p>
+          <a
+            href="https://t.me/duhdeveloper"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-block px-5 py-2 bg-green-600 hover:bg-green-700 text-white rounded-lg text-sm font-bold transition-colors"
+          >
+            Write @duhdeveloper
+          </a>
+        </div>
+
         {/* Footer */}
-        <div className="text-center mt-6 text-[10px] text-zinc-800">
+        <div className="text-center mt-4 text-[10px] text-zinc-800">
           WA Dealer v1.0
         </div>
       </div>
