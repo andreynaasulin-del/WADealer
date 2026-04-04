@@ -25,12 +25,13 @@ export async function dbGetAllSessions(userId = null) {
   return data
 }
 
-export async function dbUpsertSession({ phone_number, proxy_string, status = 'offline' }) {
+export async function dbUpsertSession({ phone_number, proxy_string, status = 'offline', user_id, team_id }) {
+  const row = { phone_number, proxy_string, status, updated_at: new Date().toISOString() }
+  if (user_id) row.user_id = user_id
+  if (team_id) row.team_id = team_id
   const { data, error } = await supabase
     .from('wa_sessions')
-    .upsert({ phone_number, proxy_string, status, updated_at: new Date().toISOString() }, {
-      onConflict: 'phone_number',
-    })
+    .upsert(row, { onConflict: 'phone_number' })
     .select()
     .single()
   if (error) throw error
@@ -1665,6 +1666,113 @@ export async function dbGetFarmStats() {
     by_stage: byStage,
     by_owner: byOwner,
     avg_health: data?.length ? Math.round(totalHealth / data.length) : 0,
+  }
+}
+
+// ─── Email Accounts ─────────────────────────────────────────────────────────
+
+export async function dbGetEmailAccounts(teamId = null) {
+  let query = supabase.from('email_accounts').select('*').order('created_at', { ascending: false })
+  if (teamId) query = query.eq('team_id', teamId)
+  const { data, error } = await query
+  if (error) throw error
+  return data || []
+}
+
+export async function dbCreateEmailAccount({ email, display_name, smtp_host, smtp_port, smtp_user, smtp_pass, imap_host, imap_port, daily_limit, user_id, team_id }) {
+  const row = { email, display_name, smtp_host, smtp_port: smtp_port || 587, smtp_user, smtp_pass }
+  if (imap_host) row.imap_host = imap_host
+  if (imap_port) row.imap_port = imap_port
+  if (daily_limit) row.daily_limit = daily_limit
+  if (user_id) row.user_id = user_id
+  if (team_id) row.team_id = team_id
+  const { data, error } = await supabase.from('email_accounts').insert(row).select().single()
+  if (error) throw error
+  return data
+}
+
+export async function dbUpdateEmailAccount(id, updates) {
+  updates.updated_at = new Date().toISOString()
+  const { data, error } = await supabase.from('email_accounts').update(updates).eq('id', id).select().single()
+  if (error) throw error
+  return data
+}
+
+export async function dbDeleteEmailAccount(id) {
+  const { error } = await supabase.from('email_accounts').delete().eq('id', id)
+  if (error) throw error
+}
+
+// ─── Email Campaigns ────────────────────────────────────────────────────────
+
+export async function dbGetEmailCampaigns(teamId = null) {
+  let query = supabase.from('email_campaigns').select('*').order('created_at', { ascending: false })
+  if (teamId) query = query.eq('team_id', teamId)
+  const { data, error } = await query
+  if (error) throw error
+  return data || []
+}
+
+export async function dbCreateEmailCampaign({ name, subject, body_html, body_text, from_account_id, delay_min_sec, delay_max_sec, user_id, team_id }) {
+  const row = { name, subject, body_html, status: 'draft' }
+  if (body_text) row.body_text = body_text
+  if (from_account_id) row.from_account_id = from_account_id
+  if (delay_min_sec) row.delay_min_sec = delay_min_sec
+  if (delay_max_sec) row.delay_max_sec = delay_max_sec
+  if (user_id) row.user_id = user_id
+  if (team_id) row.team_id = team_id
+  const { data, error } = await supabase.from('email_campaigns').insert(row).select().single()
+  if (error) throw error
+  return data
+}
+
+export async function dbUpdateEmailCampaign(id, updates) {
+  updates.updated_at = new Date().toISOString()
+  const { data, error } = await supabase.from('email_campaigns').update(updates).eq('id', id).select().single()
+  if (error) throw error
+  return data
+}
+
+export async function dbDeleteEmailCampaign(id) {
+  const { error } = await supabase.from('email_campaigns').delete().eq('id', id)
+  if (error) throw error
+}
+
+// ─── Email Leads ────────────────────────────────────────────────────────────
+
+export async function dbGetEmailLeads(campaignId) {
+  const { data, error } = await supabase.from('email_leads').select('*').eq('campaign_id', campaignId).order('created_at')
+  if (error) throw error
+  return data || []
+}
+
+export async function dbAddEmailLeads(campaignId, leads) {
+  // leads: [{ email, name? }]
+  const rows = leads.map(l => ({ campaign_id: campaignId, email: l.email, name: l.name || null }))
+  const { data, error } = await supabase.from('email_leads').insert(rows).select()
+  if (error) throw error
+  // Update total_leads count
+  await supabase.from('email_campaigns').update({ total_leads: rows.length, updated_at: new Date().toISOString() }).eq('id', campaignId)
+  return data
+}
+
+export async function dbGetEmailStats(teamId = null) {
+  let accQuery = supabase.from('email_accounts').select('id, status, sent_today')
+  if (teamId) accQuery = accQuery.eq('team_id', teamId)
+  const { data: accounts } = await accQuery
+
+  let campQuery = supabase.from('email_campaigns').select('id, status, sent_count, error_count, total_leads')
+  if (teamId) campQuery = campQuery.eq('team_id', teamId)
+  const { data: campaigns } = await campQuery
+
+  return {
+    accounts_total: accounts?.length || 0,
+    accounts_online: accounts?.filter(a => a.status === 'online').length || 0,
+    sent_today: accounts?.reduce((s, a) => s + (a.sent_today || 0), 0) || 0,
+    campaigns_total: campaigns?.length || 0,
+    campaigns_running: campaigns?.filter(c => c.status === 'running').length || 0,
+    total_sent: campaigns?.reduce((s, c) => s + (c.sent_count || 0), 0) || 0,
+    total_errors: campaigns?.reduce((s, c) => s + (c.error_count || 0), 0) || 0,
   }
 }
 

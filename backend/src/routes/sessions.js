@@ -1,12 +1,12 @@
 import { orchestrator } from '../orchestrator.js'
 
 export default async function sessionRoutes(fastify) {
-  // GET /api/sessions — list sessions (filtered by user)
+  // GET /api/sessions — list sessions (filtered by user/team)
   fastify.get('/api/sessions', async (req, reply) => {
-    let live = orchestrator.getAllSessionStates()
-    if (req.user && !req.user.is_admin) {
-      live = live.filter(s => s.user_id === req.user.id)
-    }
+    const isAdmin = req.user?.is_admin
+    const live = isAdmin
+      ? orchestrator.getAllSessionStates()
+      : orchestrator.getAllSessionStates(req.user?.id, req.user?.team_id)
     return reply.send(live)
   })
 

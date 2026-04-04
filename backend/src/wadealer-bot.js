@@ -1,4 +1,5 @@
 import { Bot, InlineKeyboard, InputFile } from 'grammy'
+import bcrypt from 'bcrypt'
 import fs from 'fs'
 import path from 'path'
 import { fileURLToPath } from 'url'
@@ -66,6 +67,11 @@ const stats = {
   startedAt: null,
 }
 
+// ─── User auth state: tgUserId → { userId, teamId, email, isAdmin } ────────
+const authedUsers = new Map()
+// Pending login: tgUserId → { email, step }
+const pendingLogin = new Map()
+
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
 function esc(text) {
@@ -104,8 +110,30 @@ function mainMenuKeyboard() {
 
 // ─── Gather stats from orchestrator ──────────────────────────────────────────
 
-function getSessionsInfo() {
+// ─── Auth helpers for bot ────────────────────────────────────────────────────
+
+function getAuthInfo(tgUserId) {
+  return authedUsers.get(tgUserId) || null
+}
+
+function isAuthed(tgUserId) {
+  return authedUsers.has(tgUserId)
+}
+
+function getSessionsInfo(auth = null) {
   if (!_orchestrator) return { wa: [], tg: [], waOnline: 0, tgOnline: 0 }
+
+  // If auth provided and not admin — filter by user/team
+  if (auth && !auth.isAdmin) {
+    const filtered = _orchestrator.getAllSessionStates(auth.userId, auth.teamId)
+    const wa = filtered.map(s => ({ phone: s.phone, status: s.status, name: s.phone }))
+    return {
+      wa,
+      tg: [], // TG accounts not filtered yet
+      waOnline: wa.filter(s => s.status === 'online').length,
+      tgOnline: 0,
+    }
+  }
 
   const wa = []
   for (const s of _orchestrator.sessions.values()) {
@@ -125,11 +153,18 @@ function getSessionsInfo() {
   }
 }
 
-async function getCampaignsInfo() {
+async function getCampaignsInfo(auth = null) {
   if (!_db) return { wa: [], tg: [] }
   try {
-    const waCampaigns = await _db.dbGetAllCampaigns()
-    const tgCampaigns = await _db.dbGetAllTelegramCampaigns()
+    let waCampaigns = await _db.dbGetAllCampaigns()
+    let tgCampaigns = await _db.dbGetAllTelegramCampaigns()
+
+    // Filter by team if not admin
+    if (auth && !auth.isAdmin && auth.teamId) {
+      waCampaigns = (waCampaigns || []).filter(c => c.team_id === auth.teamId || c.user_id === auth.userId)
+      tgCampaigns = (tgCampaigns || []).filter(c => c.team_id === auth.teamId || c.user_id === auth.userId)
+    }
+
     return { wa: waCampaigns || [], tg: tgCampaigns || [] }
   } catch {
     return { wa: [], tg: [] }
@@ -249,19 +284,55 @@ function setupBot(botInstance) {
   // ══════════════════════════════════════════════════════════════════════════
 
   botInstance.command('start', async (ctx) => {
-    const { waOnline, tgOnline } = getSessionsInfo()
-    const greeting = ctx.chat.type === 'private'
-      ? `👋 <b>Добро пожаловать в WADealer!</b>\n\n` +
-        `📱 WA сессий онлайн: <b>${waOnline}</b>\n` +
-        `✈️ TG аккаунтов онлайн: <b>${tgOnline}</b>\n` +
-        `📨 Пересылок за сессию: <b>${stats.forwarded}</b>\n\n` +
-        `Выберите действие:`
-      : `🟢 <b>WADealer</b> активен\n\nWA: ${waOnline} | TG: ${tgOnline} | 📨 ${stats.forwarded}`
+    const tgUserId = ctx.from?.id
 
-    await ctx.reply(greeting, {
-      parse_mode: 'HTML',
-      reply_markup: mainMenuKeyboard(),
-    })
+    // In groups — no auth required, show summary
+    if (ctx.chat.type !== 'private') {
+      const { waOnline, tgOnline } = getSessionsInfo()
+      return ctx.reply(`🟢 <b>WADealer</b> активен\n\nWA: ${waOnline} | TG: ${tgOnline} | 📨 ${stats.forwarded}`, {
+        parse_mode: 'HTML',
+        reply_markup: mainMenuKeyboard(),
+      })
+    }
+
+    // Private chat — check auth
+    if (!isAuthed(tgUserId)) {
+      pendingLogin.set(tgUserId, { step: 'email' })
+      return ctx.reply(
+        '🔐 <b>Авторизация WADealer</b>\n\n' +
+        'Для доступа к боту нужно привязать ваш аккаунт.\n\n' +
+        '📧 Введите ваш <b>email</b> (тот же что при регистрации):',
+        { parse_mode: 'HTML' }
+      )
+    }
+
+    // Authed — show personalized menu
+    const auth = getAuthInfo(tgUserId)
+    const { waOnline, tgOnline } = getSessionsInfo(auth)
+    await ctx.reply(
+      `👋 <b>Добро пожаловать, ${esc(auth.email)}!</b>\n\n` +
+      `📱 WA сессий онлайн: <b>${waOnline}</b>\n` +
+      `✈️ TG аккаунтов онлайн: <b>${tgOnline}</b>\n` +
+      `📨 Пересылок за сессию: <b>${stats.forwarded}</b>\n\n` +
+      `Выберите действие:`,
+      { parse_mode: 'HTML', reply_markup: mainMenuKeyboard() }
+    )
+  })
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // /logout — remove auth binding
+  // ══════════════════════════════════════════════════════════════════════════
+
+  botInstance.command('logout', async (ctx) => {
+    if (ctx.chat.type !== 'private') return
+    const tgUserId = ctx.from?.id
+    if (authedUsers.has(tgUserId)) {
+      authedUsers.delete(tgUserId)
+      pendingLogin.delete(tgUserId)
+      await ctx.reply('👋 Вы вышли из аккаунта. Используйте /start чтобы войти снова.')
+    } else {
+      await ctx.reply('Вы не авторизованы. Используйте /start')
+    }
   })
 
   // ══════════════════════════════════════════════════════════════════════════
@@ -271,9 +342,10 @@ function setupBot(botInstance) {
   // ── Stats ──
   botInstance.callbackQuery('menu_stats', async (ctx) => {
     await ctx.answerCallbackQuery()
-    const info = getSessionsInfo()
+    const auth = getAuthInfo(ctx.from?.id)
+    const info = getSessionsInfo(auth)
     const uptime = stats.startedAt ? formatUptime(Date.now() - stats.startedAt) : '—'
-    const campaigns = await getCampaignsInfo()
+    const campaigns = await getCampaignsInfo(auth)
 
     const waRunning = campaigns.wa.filter(c => c.status === 'running').length
     const tgRunning = campaigns.tg.filter(c => c.status === 'running').length
@@ -304,7 +376,8 @@ function setupBot(botInstance) {
   // ── Sessions list ──
   botInstance.callbackQuery('menu_sessions', async (ctx) => {
     await ctx.answerCallbackQuery()
-    const info = getSessionsInfo()
+    const auth = getAuthInfo(ctx.from?.id)
+    const info = getSessionsInfo(auth)
 
     const lines = ['📱 <b>Сессии</b>', '']
 
@@ -337,7 +410,8 @@ function setupBot(botInstance) {
   // ── Campaigns ──
   botInstance.callbackQuery('menu_campaigns', async (ctx) => {
     await ctx.answerCallbackQuery()
-    const campaigns = await getCampaignsInfo()
+    const auth = getAuthInfo(ctx.from?.id)
+    const campaigns = await getCampaignsInfo(auth)
     const lines = ['📢 <b>Кампании</b>', '']
 
     const allCampaigns = [
@@ -372,7 +446,8 @@ function setupBot(botInstance) {
   // ── Pause/Resume ──
   botInstance.callbackQuery('menu_pause', async (ctx) => {
     await ctx.answerCallbackQuery()
-    const campaigns = await getCampaignsInfo()
+    const auth = getAuthInfo(ctx.from?.id)
+    const campaigns = await getCampaignsInfo(auth)
     const running = [...campaigns.wa, ...campaigns.tg].filter(c => c.status === 'running')
     const paused = [...campaigns.wa, ...campaigns.tg].filter(c => c.status === 'paused')
 
@@ -402,7 +477,8 @@ function setupBot(botInstance) {
     await ctx.answerCallbackQuery('⏸ Ставлю на паузу...')
     if (_orchestrator) {
       try {
-        const campaigns = await getCampaignsInfo()
+        const auth = getAuthInfo(ctx.from?.id)
+        const campaigns = await getCampaignsInfo(auth)
         let count = 0
         for (const c of [...campaigns.wa, ...campaigns.tg]) {
           if (c.status === 'running') {
@@ -428,7 +504,8 @@ function setupBot(botInstance) {
     await ctx.answerCallbackQuery('▶️ Возобновляю...')
     if (_orchestrator) {
       try {
-        const campaigns = await getCampaignsInfo()
+        const auth = getAuthInfo(ctx.from?.id)
+        const campaigns = await getCampaignsInfo(auth)
         let count = 0
         for (const c of [...campaigns.wa, ...campaigns.tg]) {
           if (c.status === 'paused') {
@@ -464,6 +541,7 @@ function setupBot(botInstance) {
       '/resume — Возобновить рассылку',
       '/connect — Подключить эту группу',
       '/disconnect — Отключить группу',
+      '/logout — Выйти из аккаунта',
       '',
       '<b>Как отвечать клиентам:</b>',
       '1. Бот пересылает входящие сообщения в группу',
@@ -484,7 +562,8 @@ function setupBot(botInstance) {
   // ── Back to main menu ──
   botInstance.callbackQuery('menu_back', async (ctx) => {
     await ctx.answerCallbackQuery()
-    const { waOnline, tgOnline } = getSessionsInfo()
+    const auth = getAuthInfo(ctx.from?.id)
+    const { waOnline, tgOnline } = getSessionsInfo(auth)
     const text = ctx.chat.type === 'private'
       ? `👋 <b>WADealer</b>\n\n📱 WA: <b>${waOnline}</b> | ✈️ TG: <b>${tgOnline}</b> | 📨 ${stats.forwarded}\n\nВыберите действие:`
       : `🟢 <b>WADealer</b>\n\nWA: ${waOnline} | TG: ${tgOnline} | 📨 ${stats.forwarded}`
@@ -500,9 +579,11 @@ function setupBot(botInstance) {
   // ══════════════════════════════════════════════════════════════════════════
 
   botInstance.command('stats', async (ctx) => {
-    const info = getSessionsInfo()
+    const auth = getAuthInfo(ctx.from?.id)
+    if (ctx.chat.type === 'private' && !auth) return ctx.reply('🔐 Сначала авторизуйтесь: /start')
+    const info = getSessionsInfo(auth)
     const uptime = stats.startedAt ? formatUptime(Date.now() - stats.startedAt) : '—'
-    const campaigns = await getCampaignsInfo()
+    const campaigns = await getCampaignsInfo(auth)
     const waRunning = campaigns.wa.filter(c => c.status === 'running').length
     const tgRunning = campaigns.tg.filter(c => c.status === 'running').length
 
@@ -517,7 +598,9 @@ function setupBot(botInstance) {
   })
 
   botInstance.command('sessions', async (ctx) => {
-    const info = getSessionsInfo()
+    const auth = getAuthInfo(ctx.from?.id)
+    if (ctx.chat.type === 'private' && !auth) return ctx.reply('🔐 Сначала авторизуйтесь: /start')
+    const info = getSessionsInfo(auth)
     const lines = ['📱 <b>Сессии</b>', '']
 
     for (const s of info.wa) {
@@ -537,7 +620,9 @@ function setupBot(botInstance) {
   })
 
   botInstance.command('campaigns', async (ctx) => {
-    const campaigns = await getCampaignsInfo()
+    const auth = getAuthInfo(ctx.from?.id)
+    if (ctx.chat.type === 'private' && !auth) return ctx.reply('🔐 Сначала авторизуйтесь: /start')
+    const campaigns = await getCampaignsInfo(auth)
     const all = [...campaigns.wa.map(c => ({ ...c, t: 'WA' })), ...campaigns.tg.map(c => ({ ...c, t: 'TG' }))]
     const running = all.filter(c => c.status === 'running')
 
@@ -561,8 +646,10 @@ function setupBot(botInstance) {
   })
 
   botInstance.command('pause', async (ctx) => {
+    const auth = getAuthInfo(ctx.from?.id)
+    if (ctx.chat.type === 'private' && !auth) return ctx.reply('🔐 Сначала авторизуйтесь: /start')
     if (!_orchestrator) return ctx.reply('⚠️ Оркестратор недоступен')
-    const campaigns = await getCampaignsInfo()
+    const campaigns = await getCampaignsInfo(auth)
     let count = 0
     for (const c of [...campaigns.wa, ...campaigns.tg]) {
       if (c.status === 'running') {
@@ -573,8 +660,10 @@ function setupBot(botInstance) {
   })
 
   botInstance.command('resume', async (ctx) => {
+    const auth = getAuthInfo(ctx.from?.id)
+    if (ctx.chat.type === 'private' && !auth) return ctx.reply('🔐 Сначала авторизуйтесь: /start')
     if (!_orchestrator) return ctx.reply('⚠️ Оркестратор недоступен')
-    const campaigns = await getCampaignsInfo()
+    const campaigns = await getCampaignsInfo(auth)
     let count = 0
     for (const c of [...campaigns.wa, ...campaigns.tg]) {
       if (c.status === 'paused') {
@@ -630,7 +719,8 @@ function setupBot(botInstance) {
       '/pause — Пауза всех рассылок\n' +
       '/resume — Возобновить всё\n' +
       '/connect — Подключить группу\n' +
-      '/disconnect — Отключить группу\n\n' +
+      '/disconnect — Отключить группу\n' +
+      '/logout — Выйти из аккаунта\n\n' +
       '<i>Reply на сообщение в группе → ответ уходит клиенту</i>',
       { parse_mode: 'HTML' }
     )
@@ -708,6 +798,106 @@ function setupBot(botInstance) {
     }
   }
 
+  // ══════════════════════════════════════════════════════════════════════════
+  // Login flow handler — email/password in private chat
+  // ══════════════════════════════════════════════════════════════════════════
+
+  async function handleLoginFlow(ctx, next) {
+    // Only in private chat, only text messages
+    if (ctx.chat?.type !== 'private' || !ctx.message?.text) return next()
+
+    const tgUserId = ctx.from?.id
+    const pending = pendingLogin.get(tgUserId)
+    if (!pending) return next()
+
+    const text = ctx.message.text.trim()
+
+    // Step 1: waiting for email
+    if (pending.step === 'email') {
+      // Basic email validation
+      if (!text.includes('@') || !text.includes('.')) {
+        return ctx.reply('❌ Некорректный email. Попробуйте ещё раз:')
+      }
+      pending.email = text.toLowerCase()
+      pending.step = 'password'
+      pendingLogin.set(tgUserId, pending)
+      return ctx.reply(
+        `📧 Email: <code>${esc(pending.email)}</code>\n\n` +
+        `🔑 Теперь введите ваш <b>пароль</b>:`,
+        { parse_mode: 'HTML' }
+      )
+    }
+
+    // Step 2: waiting for password
+    if (pending.step === 'password') {
+      const password = text
+
+      // Delete the password message for security
+      try { await ctx.api.deleteMessage(ctx.chat.id, ctx.message.message_id) } catch {}
+
+      try {
+        // Look up user by email
+        const { dbFindUserByEmail } = await import('./db.js')
+        const { getUserTeam } = await import('./auth-helpers.js')
+
+        const user = await dbFindUserByEmail(pending.email)
+        if (!user || !user.password_hash) {
+          pendingLogin.delete(tgUserId)
+          return ctx.reply(
+            '❌ Пользователь не найден или не зарегистрирован.\n\n' +
+            'Сначала зарегистрируйтесь на https://www.wadealer.org\n' +
+            'Затем используйте /start для привязки.'
+          )
+        }
+
+        const valid = await bcrypt.compare(password, user.password_hash)
+        if (!valid) {
+          pendingLogin.delete(tgUserId)
+          return ctx.reply(
+            '❌ Неверный пароль.\n\n' +
+            'Используйте /start чтобы попробовать снова.'
+          )
+        }
+
+        // Auth successful — get team info
+        const teamInfo = await getUserTeam(user.id)
+
+        const authData = {
+          userId: user.id,
+          teamId: teamInfo?.team_id || null,
+          email: user.email,
+          isAdmin: user.is_admin || false,
+          displayName: user.display_name || user.email.split('@')[0],
+        }
+
+        authedUsers.set(tgUserId, authData)
+        pendingLogin.delete(tgUserId)
+
+        console.log(`[WADealer Bot] User authed: tg=${tgUserId} → ${user.email} (admin=${user.is_admin})`)
+
+        const { waOnline, tgOnline } = getSessionsInfo(authData)
+        return ctx.reply(
+          `✅ <b>Авторизация успешна!</b>\n\n` +
+          `👤 ${esc(authData.displayName)} (${esc(user.email)})\n` +
+          (authData.isAdmin ? '👑 Администратор\n' : '') +
+          `\n📱 WA сессий: <b>${waOnline}</b>\n` +
+          `✈️ TG аккаунтов: <b>${tgOnline}</b>\n\n` +
+          `Выберите действие:`,
+          { parse_mode: 'HTML', reply_markup: mainMenuKeyboard() }
+        )
+      } catch (err) {
+        console.error(`[WADealer Bot] Login error: ${err.message}`)
+        pendingLogin.delete(tgUserId)
+        return ctx.reply(`❌ Ошибка авторизации: ${err.message}\n\nИспользуйте /start чтобы попробовать снова.`)
+      }
+    }
+
+    return next()
+  }
+
+  // Register login flow BEFORE operator reply handler
+  botInstance.on('message', handleLoginFlow)
+
   // Listen to ALL message types in the group
   botInstance.on('message', handleOperatorReply)
 }
@@ -748,6 +938,7 @@ export async function startWaDealerBot(orchestrator = null) {
       { command: 'pause', description: 'Пауза всех рассылок' },
       { command: 'resume', description: 'Возобновить рассылку' },
       { command: 'help', description: 'Помощь' },
+      { command: 'logout', description: 'Выйти из аккаунта' },
     ])
   } catch {}
 

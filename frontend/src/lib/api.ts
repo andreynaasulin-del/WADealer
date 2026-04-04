@@ -332,6 +332,32 @@ export const api = {
       req<{ ok: boolean; message: string }>(`/marketplace/return/${id}`, { method: 'POST', body: '{}' }),
   },
 
+  // ─── Email ──────────────────────────────────────────────────────────────────
+  email: {
+    accounts: {
+      list: () => req<EmailAccount[]>('/email/accounts'),
+      create: (data: CreateEmailAccount) =>
+        req<EmailAccount>('/email/accounts', { method: 'POST', body: JSON.stringify(data) }),
+      update: (id: string, data: Partial<EmailAccount>) =>
+        req<EmailAccount>(`/email/accounts/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
+      remove: (id: string) => req<{ ok: boolean }>(`/email/accounts/${id}`, { method: 'DELETE' }),
+      test: (id: string) =>
+        req<{ ok: boolean; message: string }>(`/email/accounts/${id}/test`, { method: 'POST', body: '{}' }),
+    },
+    campaigns: {
+      list: () => req<EmailCampaign[]>('/email/campaigns'),
+      create: (data: CreateEmailCampaign) =>
+        req<EmailCampaign>('/email/campaigns', { method: 'POST', body: JSON.stringify(data) }),
+      update: (id: string, data: Partial<EmailCampaign>) =>
+        req<EmailCampaign>(`/email/campaigns/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
+      remove: (id: string) => req<{ ok: boolean }>(`/email/campaigns/${id}`, { method: 'DELETE' }),
+      leads: (id: string) => req<EmailLead[]>(`/email/campaigns/${id}/leads`),
+      addLeads: (id: string, leads: { email: string; name?: string }[]) =>
+        req<EmailLead[]>(`/email/campaigns/${id}/leads`, { method: 'POST', body: JSON.stringify({ leads }) }),
+    },
+    stats: () => req<EmailStats>('/email/stats'),
+  },
+
   // ─── Blacklist ─────────────────────────────────────────────────────────────
   blacklist: {
     list: (params?: { reason?: string; search?: string; limit?: number; offset?: number }) => {
@@ -809,4 +835,88 @@ export interface MarketplaceAccount {
   sale_price_usd: number | null
   registered_at: string
   ready_at: string | null
+}
+
+// ─── Email Types ────────────────────────────────────────────────────────────
+
+export interface EmailAccount {
+  id: string
+  email: string
+  display_name: string | null
+  smtp_host: string
+  smtp_port: number
+  smtp_user: string
+  smtp_pass: string
+  imap_host: string | null
+  imap_port: number | null
+  status: 'offline' | 'online' | 'error'
+  daily_limit: number
+  sent_today: number
+  last_error: string | null
+  user_id: string | null
+  team_id: string | null
+  created_at: string
+  updated_at: string
+}
+
+export interface CreateEmailAccount {
+  email: string
+  display_name?: string
+  smtp_host: string
+  smtp_port?: number
+  smtp_user: string
+  smtp_pass: string
+  imap_host?: string
+  imap_port?: number
+  daily_limit?: number
+}
+
+export interface EmailCampaign {
+  id: string
+  name: string
+  subject: string
+  body_html: string
+  body_text: string | null
+  from_account_id: string | null
+  status: 'draft' | 'running' | 'paused' | 'completed' | 'error'
+  delay_min_sec: number
+  delay_max_sec: number
+  sent_count: number
+  error_count: number
+  total_leads: number
+  user_id: string | null
+  team_id: string | null
+  created_at: string
+  updated_at: string
+}
+
+export interface CreateEmailCampaign {
+  name: string
+  subject: string
+  body_html: string
+  body_text?: string
+  from_account_id?: string
+  delay_min_sec?: number
+  delay_max_sec?: number
+}
+
+export interface EmailLead {
+  id: string
+  campaign_id: string
+  email: string
+  name: string | null
+  status: 'pending' | 'sent' | 'failed' | 'bounced' | 'replied'
+  sent_at: string | null
+  error_message: string | null
+  created_at: string
+}
+
+export interface EmailStats {
+  accounts_total: number
+  accounts_online: number
+  sent_today: number
+  campaigns_total: number
+  campaigns_running: number
+  total_sent: number
+  total_errors: number
 }

@@ -183,9 +183,10 @@ export default function DashboardPage() {
         </div>
 
         {/* ── Quick Navigation ─────────────────────────────────────── */}
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+        <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
           <NavCard label="WhatsApp" description="Сессии и рассылки" href="/whatsapp" color="green" icon="WA" />
           <NavCard label="Telegram" description="Аккаунты и инвайтинг" href="/telegram" color="blue" icon="TG" />
+          <NavCard label="Email" description="SMTP рассылки" href="/email" color="orange" icon="EM" />
           <NavCard label="CRM" description="Диалоги и ответы" href="/crm" color="purple" icon="CRM" />
           <NavCard label="Настройки" description="Аккаунты и прокси" href="/telegram" color="amber" icon="CFG" />
         </div>
@@ -288,12 +289,14 @@ function NavCard({ label, description, href, color, icon }: {
     blue: 'hover:border-blue-500/40 hover:bg-blue-950/10',
     purple: 'hover:border-purple-500/40 hover:bg-purple-950/10',
     amber: 'hover:border-amber-500/40 hover:bg-amber-950/10',
+    orange: 'hover:border-orange-500/40 hover:bg-orange-950/10',
   }
   const textColor: Record<string, string> = {
     green: 'text-green-400',
     blue: 'text-blue-400',
     purple: 'text-purple-400',
     amber: 'text-amber-400',
+    orange: 'text-orange-400',
   }
   return (
     <button

@@ -19,6 +19,7 @@
     "grammy": "^1.41.1",
     "https-proxy-agent": "^7.0.6",
     "input": "^1.0.1",
+    "nodemailer": "^8.0.4",
     "openai": "^6.24.0",
     "pino": "^9.6.0",
     "pino-pretty": "^13.1.3",

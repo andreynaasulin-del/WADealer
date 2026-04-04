@@ -7,12 +7,10 @@ export default async function crmRoutes(fastify) {
     const sessionPhone = req.query.session_phone || null
     const campaignId = req.query.campaign_id || null
     let conversations = await dbGetConversations(sessionPhone, campaignId)
-    // Filter by team's sessions if not admin
+    // Filter by user's sessions if not admin
     if (req.user && !req.user.is_admin) {
-      const allSessions = orchestrator.getAllSessionStates()
-      const teamPhones = new Set(
-        allSessions.filter(s => s.user_id === req.user.id).map(s => s.phone)
-      )
+      const userSessions = orchestrator.getAllSessionStates(req.user.id, req.user.team_id)
+      const teamPhones = new Set(userSessions.map(s => s.phone))
       conversations = conversations.filter(c => teamPhones.has(c.session_phone))
     }
     return conversations

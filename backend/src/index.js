@@ -44,6 +44,7 @@ import teamRoutes     from './routes/teams.js'
 import blacklistRoutes from './routes/blacklist.js'
 import farmRoutes from './routes/farm.js'
 import marketplaceRoutes from './routes/marketplace.js'
+import emailRoutes from './routes/email.js'
 import {
   dbValidateAuthSession,
   dbCountInviteTokens,
@@ -151,6 +152,7 @@ await app.register(teamRoutes)
 await app.register(blacklistRoutes)
 await app.register(farmRoutes)
 await app.register(marketplaceRoutes)
+await app.register(emailRoutes)
 
 // ─── WebSocket endpoint — live logs & events ─────────────────────────────────
 // @fastify/websocket v8 passes a WebSocketStream (Duplex); raw WS is at .socket
@@ -173,10 +175,34 @@ app.get('/ws', { websocket: true }, async (connection, req) => {
     // If no token provided but auth is enabled, still allow (WS auth is optional for now)
   }
 
-  orchestrator.addWsClient(ws)
+  // Resolve user from WS token
+  let wsUser = null
+  if (authEnabled) {
+    const url2 = new URL(req.url, `http://${req.headers.host}`)
+    const wsToken = url2.searchParams.get('token')
+    if (wsToken) {
+      const sess = await dbValidateAuthSession(wsToken)
+      if (sess?.user_id) {
+        const u = await dbGetUserById(sess.user_id)
+        if (u) {
+          const ti = await getUserTeam(u.id)
+          wsUser = { id: u.id, team_id: ti?.team_id, is_admin: u.is_admin }
+        }
+      }
+    }
+  }
 
-  // Send current state snapshot on connect
-  const states = orchestrator.getAllSessionStates()
+  orchestrator.addWsClient(ws, {
+    userId: wsUser?.id,
+    teamId: wsUser?.team_id,
+    isAdmin: wsUser?.is_admin || !authEnabled,
+  })
+
+  // Send current state snapshot (filtered by user)
+  const isAdmin = wsUser?.is_admin || !authEnabled
+  const states = isAdmin
+    ? orchestrator.getAllSessionStates()
+    : orchestrator.getAllSessionStates(wsUser?.id, wsUser?.team_id)
   const tgAccounts = orchestrator.getAllTelegramAccountStates()
   try {
     ws.send(JSON.stringify({

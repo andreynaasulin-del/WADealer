@@ -35,8 +35,8 @@ export class Orchestrator {
     /** @type {MessageQueue} Telegram queue (separate instance) */
     this.telegramQueue = new MessageQueue(this, 'telegram')
 
-    /** @type {Set<import('ws').WebSocket>} */
-    this.wsClients = new Set()
+    /** @type {Map<import('ws').WebSocket, {userId?: string, teamId?: string, isAdmin?: boolean}>} */
+    this.wsClients = new Map()
 
     /** @type {typeof db} */
     this.db = db
@@ -162,8 +162,9 @@ export class Orchestrator {
 
   // ─── WebSocket ─────────────────────────────────────────────────────────────
 
-  addWsClient(ws) {
-    this.wsClients.add(ws)
+  addWsClient(ws, { userId, teamId, isAdmin } = {}) {
+    this.wsClients.set(ws, { userId, teamId, isAdmin })
+    // Send only this user's logs from buffer
     for (const entry of this.logBuffer) {
       try { ws.send(JSON.stringify(entry)) } catch (_) {}
     }
@@ -175,8 +176,13 @@ export class Orchestrator {
 
   broadcast(event) {
     const payload = JSON.stringify(event)
-    for (const ws of this.wsClients) {
-      try { ws.send(payload) } catch (_) { this.wsClients.delete(ws) }
+    for (const [ws, meta] of this.wsClients) {
+      try {
+        // Admins see everything; others see only their team's events
+        if (meta.isAdmin || !event.team_id || event.team_id === meta.teamId) {
+          ws.send(payload)
+        }
+      } catch (_) { this.wsClients.delete(ws) }
     }
   }
 
@@ -204,7 +210,7 @@ export class Orchestrator {
   // WhatsApp Session management (unchanged)
   // ══════════════════════════════════════════════════════════════════════════
 
-  async createSession(phone, proxyString, { skipFroxy = false } = {}) {
+  async createSession(phone, proxyString, userId, teamId, { skipFroxy = false } = {}) {
     if (this.sessions.has(phone)) {
       throw new Error(`Сессия ${phone} уже существует`)
     }
@@ -214,12 +220,14 @@ export class Orchestrator {
       this.log(phone, `Froxy порт ${port} назначен (уникальный IP)`)
     }
     const proxyPort = proxyString ? proxyString.split(':')[1] : null
-    const dbRow = await db.dbUpsertSession({ phone_number: phone, proxy_string: proxyString || '', status: 'offline' })
+    const dbRow = await db.dbUpsertSession({ phone_number: phone, proxy_string: proxyString || '', status: 'offline', user_id: userId, team_id: teamId })
     const session = new Session(phone, proxyString || '', this)
     session.id = dbRow.id
+    session.userId = userId || null
+    session.teamId = teamId || null
     this.sessions.set(phone, session)
     this.log(phone, proxyPort ? `Сессия добавлена → порт ${proxyPort} — нажми Подключить` : `Сессия добавлена (без прокси) — нажми Подключить`)
-    this.broadcast({ type: 'session_created', phone })
+    this.broadcast({ type: 'session_created', phone, user_id: userId, team_id: teamId })
     return { id: dbRow.id, phone, status: 'offline', proxyPort }
   }
 
@@ -253,12 +261,16 @@ export class Orchestrator {
     }
   }
 
-  getAllSessionStates() {
-    return Array.from(this.sessions.values()).map(s => ({
+  getAllSessionStates(filterUserId = null, filterTeamId = null) {
+    let sessions = Array.from(this.sessions.values())
+    if (filterUserId) sessions = sessions.filter(s => s.userId === filterUserId)
+    else if (filterTeamId) sessions = sessions.filter(s => s.teamId === filterTeamId)
+    return sessions.map(s => ({
       id: s.id, phone: s.phone, status: s.status,
       qrCode: s.qrCode, proxyPort: s.proxyString.split(':')[1] || null,
       connectedAt: s.connectedAt,
       user_id: s.userId || null,
+      team_id: s.teamId || null,
     }))
   }
 
@@ -869,6 +881,7 @@ export class Orchestrator {
         const session = new Session(s.phone_number, s.proxy_string, this)
         session.id = s.id
         session.userId = s.user_id || null
+        session.teamId = s.team_id || null
         this.sessions.set(s.phone_number, session)
 
         // ── Auto-start logic ──────────────────────────────────────────────

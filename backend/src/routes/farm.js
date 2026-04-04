@@ -101,7 +101,7 @@ export default async function farmRoutes(fastify) {
 
     // Create a real Baileys session so the user can connect via QR
     try {
-      await orchestrator.createSession(cleanPhone, proxy_string || null, { skipFroxy: !proxy_string })
+      await orchestrator.createSession(cleanPhone, proxy_string || null, req.user?.id, req.user?.team_id, { skipFroxy: !proxy_string })
     } catch (err) {
       if (!err.message.includes('уже существует')) {
         // Non-fatal — account is created, session can be added manually
