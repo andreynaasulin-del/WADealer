@@ -1,7 +1,7 @@
 import crypto from 'crypto'
 import bcrypt from 'bcrypt'
 import { createClient } from '@supabase/supabase-js'
-import { getBotAuthState } from '../wadealer-bot.js'
+import { getBotAuthState } from '../bot-auth-store.js'
 import {
   dbValidateInviteToken,
   dbUseInviteToken,

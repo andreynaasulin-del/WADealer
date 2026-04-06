@@ -3,6 +3,8 @@ import bcrypt from 'bcrypt'
 import fs from 'fs'
 import path from 'path'
 import { fileURLToPath } from 'url'
+import { setBotAuthState, getBotAuthState } from './bot-auth-store.js'
+export { setBotAuthState, getBotAuthState }
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const CONFIG_PATH = path.resolve(__dirname, '../data/bot-config.json')
@@ -71,11 +73,6 @@ const stats = {
 const authedUsers = new Map()
 // Pending login: tgUserId → { email, step }
 const pendingLogin = new Map()
-// Web deeplink auth states: state → { session_token, expires_at, user }
-const botAuthStates = new TTLMap(5 * 60 * 1000) // 5 min TTL
-
-export function setBotAuthState(state, data) { botAuthStates.set(state, data) }
-export function getBotAuthState(state) { return botAuthStates.get(state) }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -331,7 +328,7 @@ function setupBot(botInstance) {
         const session = await dbCreateAuthSession(null, user.id)
 
         // Store state for polling endpoint
-        botAuthStates.set(state, {
+        setBotAuthState(state, {
           session_token: session.token,
           expires_at: session.expires_at,
           user: {
