@@ -71,6 +71,11 @@ const stats = {
 const authedUsers = new Map()
 // Pending login: tgUserId → { email, step }
 const pendingLogin = new Map()
+// Web deeplink auth states: state → { session_token, expires_at, user }
+const botAuthStates = new TTLMap(5 * 60 * 1000) // 5 min TTL
+
+export function setBotAuthState(state, data) { botAuthStates.set(state, data) }
+export function getBotAuthState(state) { return botAuthStates.get(state) }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -104,7 +109,7 @@ function mainMenuKeyboard() {
     .text('📱 Сессии', 'menu_sessions').row()
     .text('📢 Кампании', 'menu_campaigns')
     .text('⏸ Пауза/Старт', 'menu_pause').row()
-    .webApp('🌐 Открыть панель', 'https://www.wadealer.org')
+    .webApp('🌐 Открыть панель', 'https://wadealer.business')
     .text('❓ Помощь', 'menu_help')
 }
 
@@ -293,6 +298,71 @@ function setupBot(botInstance) {
         parse_mode: 'HTML',
         reply_markup: mainMenuKeyboard(),
       })
+    }
+
+    // ── Web deeplink: /start web_STATE ────────────────────────────────────────
+    const startParam = ctx.match
+    if (startParam && String(startParam).startsWith('web_')) {
+      const state = String(startParam).slice(4)
+      const syntheticEmail = `tg_${tgUserId}@wadealer.tg`
+      const displayName = [ctx.from?.first_name, ctx.from?.last_name].filter(Boolean).join(' ')
+        || ctx.from?.username || `TG_${tgUserId}`
+
+      try {
+        const {
+          dbFindUserByEmail, dbCreateUser, dbCreateAuthSession,
+          dbGetUserTeam, dbCreateTeam, dbAddTeamMember,
+        } = await import('./db.js')
+        const { getUserTeam } = await import('./auth-helpers.js')
+
+        let user = await dbFindUserByEmail(syntheticEmail)
+        if (!user) {
+          user = await dbCreateUser(syntheticEmail, null, displayName, 'start')
+        }
+
+        // Ensure user has a team
+        let teamInfo = await dbGetUserTeam(user.id)
+        if (!teamInfo) {
+          const team = await dbCreateTeam(`Team ${user.display_name || displayName}`, user.id)
+          await dbAddTeamMember(team.id, user.id, 'admin')
+          teamInfo = { team_id: team.id, role: 'admin', team_name: team.name }
+        }
+
+        const session = await dbCreateAuthSession(null, user.id)
+
+        // Store state for polling endpoint
+        botAuthStates.set(state, {
+          session_token: session.token,
+          expires_at: session.expires_at,
+          user: {
+            id: user.id, email: user.email, display_name: user.display_name,
+            tier: user.tier, is_admin: user.is_admin,
+            team_id: teamInfo.team_id, team_role: teamInfo.role, team_name: teamInfo.team_name,
+          },
+        })
+
+        // Also register in bot auth map
+        authedUsers.set(tgUserId, {
+          userId: user.id, teamId: teamInfo.team_id,
+          email: user.email, isAdmin: user.is_admin || false,
+          displayName: user.display_name || displayName,
+        })
+        pendingLogin.delete(tgUserId)
+
+        console.log(`[WADealer Bot] Web auth: tg=${tgUserId} → ${user.email}`)
+
+        return ctx.reply(
+          `✅ <b>Авторизация успешна!</b>\n\n` +
+          `👤 ${esc(user.display_name || displayName)}\n` +
+          `🆔 Telegram ID привязан к аккаунту\n\n` +
+          `Вернитесь на сайт — вы уже авторизованы!\n\n` +
+          `<a href="https://wadealer.business">🌐 Открыть WADealer</a>`,
+          { parse_mode: 'HTML' }
+        )
+      } catch (err) {
+        console.error(`[WADealer Bot] Web auth error: ${err.message}`)
+        return ctx.reply(`❌ Ошибка авторизации: ${err.message}\n\nПопробуйте снова.`)
+      }
     }
 
     // Private chat — check auth
@@ -845,7 +915,7 @@ function setupBot(botInstance) {
           pendingLogin.delete(tgUserId)
           return ctx.reply(
             '❌ Пользователь не найден или не зарегистрирован.\n\n' +
-            'Сначала зарегистрируйтесь на https://www.wadealer.org\n' +
+            'Сначала зарегистрируйтесь на https://wadealer.business\n' +
             'Затем используйте /start для привязки.'
           )
         }

@@ -1,5 +1,7 @@
+import crypto from 'crypto'
 import bcrypt from 'bcrypt'
 import { createClient } from '@supabase/supabase-js'
+import { getBotAuthState } from '../wadealer-bot.js'
 import {
   dbValidateInviteToken,
   dbUseInviteToken,
@@ -45,6 +47,7 @@ const supabaseAuth = createClient(
 export default async function authRoutes(fastify) {
   // ── POST /api/auth/register — create account with email/password ────────────
   fastify.post('/api/auth/register', {
+    config: { rateLimit: { max: 3, timeWindow: '1 minute' } },
     schema: {
       body: {
         type: 'object',
@@ -121,6 +124,7 @@ export default async function authRoutes(fastify) {
 
   // ── POST /api/auth/login — email/password OR invite token ───────────────────
   fastify.post('/api/auth/login', {
+    config: { rateLimit: { max: 5, timeWindow: '1 minute' } },
     schema: {
       body: {
         type: 'object',
@@ -252,6 +256,76 @@ export default async function authRoutes(fastify) {
     })
   })
 
+  // ── POST /api/auth/telegram — Telegram Login Widget ─────────────────────────
+  fastify.post('/api/auth/telegram', {
+    config: { rateLimit: { max: 10, timeWindow: '1 minute' } },
+    schema: {
+      body: {
+        type: 'object',
+        required: ['id', 'hash', 'auth_date'],
+        properties: {
+          id:         { type: 'number' },
+          first_name: { type: 'string' },
+          last_name:  { type: 'string' },
+          username:   { type: 'string' },
+          photo_url:  { type: 'string' },
+          auth_date:  { type: 'number' },
+          hash:       { type: 'string' },
+        },
+      },
+    },
+  }, async (req, reply) => {
+    const { hash, ...tgData } = req.body
+
+    // Check auth is not stale (5 min)
+    if (Date.now() / 1000 - tgData.auth_date > 300) {
+      return reply.code(401).send({ error: 'Telegram auth устарел, попробуй снова' })
+    }
+
+    // Verify hash: HMAC-SHA256(data_check_string, SHA256(bot_token))
+    const secretKey = crypto.createHash('sha256')
+      .update(process.env.TELEGRAM_BOT_TOKEN || '')
+      .digest()
+
+    const dataCheckString = Object.keys(tgData)
+      .sort()
+      .map(k => `${k}=${tgData[k]}`)
+      .join('\n')
+
+    const expectedHash = crypto.createHmac('sha256', secretKey)
+      .update(dataCheckString)
+      .digest('hex')
+
+    if (expectedHash !== hash) {
+      return reply.code(401).send({ error: 'Неверная подпись Telegram' })
+    }
+
+    // Find or create user (synthetic email for Telegram users)
+    const syntheticEmail = `tg_${tgData.id}@wadealer.tg`
+    const displayName = [tgData.first_name, tgData.last_name].filter(Boolean).join(' ')
+      || tgData.username
+      || `TG_${tgData.id}`
+
+    let user = await dbFindUserByEmail(syntheticEmail)
+    if (!user) {
+      user = await dbCreateUser(syntheticEmail, null, displayName, 'start')
+    }
+
+    const teamInfo = await ensureUserTeam(user)
+    const session = await dbCreateAuthSession(null, user.id)
+
+    return reply.send({
+      ok: true,
+      session_token: session.token,
+      expires_at: session.expires_at,
+      user: {
+        id: user.id, email: user.email, display_name: user.display_name,
+        tier: user.tier, is_admin: user.is_admin,
+        team_id: teamInfo.team_id, team_role: teamInfo.role, team_name: teamInfo.team_name,
+      },
+    })
+  })
+
   // ── GET /api/auth/verify — check if current session is valid ────────────────
   fastify.get('/api/auth/verify', async (req, reply) => {
     const authHeader = req.headers.authorization || ''
@@ -331,5 +405,20 @@ export default async function authRoutes(fastify) {
     }
     const invites = await dbGetAllBetaInvites()
     return reply.send(invites)
+  })
+
+  // ── GET /api/auth/tg-bot-poll — poll for Telegram bot deeplink auth ─────────
+  fastify.get('/api/auth/tg-bot-poll', {
+    config: { rateLimit: { max: 60, timeWindow: '1 minute' } },
+    schema: {
+      querystring: { type: 'object', required: ['state'], properties: { state: { type: 'string', minLength: 8, maxLength: 64 } } },
+    },
+  }, async (req, reply) => {
+    const { state } = req.query
+    const data = getBotAuthState(state)
+    if (!data) {
+      return reply.send({ ok: false, pending: true })
+    }
+    return reply.send({ ok: true, ...data })
   })
 }

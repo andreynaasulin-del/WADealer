@@ -29,6 +29,7 @@ process.on('uncaughtException', (err) => {
 import Fastify from 'fastify'
 import corsPlugin from '@fastify/cors'
 import wsPlugin from '@fastify/websocket'
+import rateLimitPlugin from '@fastify/rate-limit'
 
 import { orchestrator } from './orchestrator.js'
 import authRoutes     from './routes/auth.js'
@@ -63,6 +64,8 @@ const PUBLIC_ROUTES = [
   '/api/auth/login',
   '/api/auth/register',
   '/api/auth/google',
+  '/api/auth/telegram',
+  '/api/auth/tg-bot-poll',
   '/api/auth/verify',
   '/api/public/profile',
   '/api/teams/join',
@@ -91,6 +94,23 @@ await app.register(corsPlugin, {
 })
 
 await app.register(wsPlugin)
+
+// ─── Rate limiting ──────────────────────────────────────────────────────────
+await app.register(rateLimitPlugin, {
+  global: true,
+  max: 100,
+  timeWindow: '1 minute',
+})
+
+// ─── Security headers ───────────────────────────────────────────────────────
+app.addHook('onSend', (req, reply, payload, done) => {
+  reply.header('X-Content-Type-Options', 'nosniff')
+  reply.header('X-Frame-Options', 'DENY')
+  reply.header('X-XSS-Protection', '1; mode=block')
+  reply.header('Referrer-Policy', 'strict-origin-when-cross-origin')
+  reply.header('Strict-Transport-Security', 'max-age=31536000; includeSubDomains')
+  done()
+})
 
 // ─── Auth middleware ─────────────────────────────────────────────────────────
 // Protects all /api/* routes except public ones
@@ -161,18 +181,19 @@ app.get('/ws', { websocket: true }, async (connection, req) => {
   // Normalise: v8 = WebSocketStream with .socket; fall back to direct WebSocket
   const ws = connection.socket ?? connection
 
-  // Auth check for WebSocket (token in query string)
+  // Auth check for WebSocket (token in query string) — MANDATORY
   if (authEnabled) {
     const url = new URL(req.url, `http://${req.headers.host}`)
     const token = url.searchParams.get('token')
-    if (token) {
-      const session = await dbValidateAuthSession(token)
-      if (!session) {
-        ws.close(4001, 'Unauthorized')
-        return
-      }
+    if (!token) {
+      ws.close(4001, 'Token required')
+      return
     }
-    // If no token provided but auth is enabled, still allow (WS auth is optional for now)
+    const session = await dbValidateAuthSession(token)
+    if (!session) {
+      ws.close(4001, 'Unauthorized')
+      return
+    }
   }
 
   // Resolve user from WS token
